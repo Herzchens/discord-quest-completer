@@ -52,11 +52,13 @@ IMPORTANT
     If an update ever says "Build failed", run UPDATE.cmd from this folder - it
     does the full rebuild the in-app updater can't.
 
-  - WHEN DISCORD ITSELF UPDATES, the plugin disappears. That is normal and it is
-    not broken: Discord installs each update into a brand new folder, and the
-    patch lived in the old one. Nothing is lost. Just double-click
-    INSTALL-autoupdate.cmd again and it re-patches the new version in a few
-    seconds (it reuses everything it already downloaded).
+  - WHEN DISCORD ITSELF UPDATES, Vencord normally carries the patch over on its
+    own: it notices the new version as Discord is closing and re-applies itself.
+    That only works if Discord shuts down properly, so if Discord was force-closed
+    (Task Manager, a crash, or the PC cutting out) the patch can be left behind in
+    the old version's folder and the plugin will be gone on next launch. Nothing is
+    broken and nothing is lost - just double-click INSTALL-autoupdate.cmd again and
+    it re-patches the new version in seconds, reusing everything already downloaded.
 
 
 ------------------------------------------------------------
@@ -87,4 +89,4 @@ NOTES
 ------------------------------------------------------------
   - Using mods on Discord violates the Terms of Service. The ban risk is yours.
   - Project source: github.com/nyxxbit/discord-quest-completer
-  - Version: v4.9.5
+  - Version: v4.9.6
