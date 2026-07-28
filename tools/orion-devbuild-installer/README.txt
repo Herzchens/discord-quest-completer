@@ -52,6 +52,12 @@ IMPORTANT
     If an update ever says "Build failed", run UPDATE.cmd from this folder - it
     does the full rebuild the in-app updater can't.
 
+  - WHEN DISCORD ITSELF UPDATES, the plugin disappears. That is normal and it is
+    not broken: Discord installs each update into a brand new folder, and the
+    patch lived in the old one. Nothing is lost. Just double-click
+    INSTALL-autoupdate.cmd again and it re-patches the new version in a few
+    seconds (it reuses everything it already downloaded).
+
 
 ------------------------------------------------------------
 UNINSTALL

@@ -285,18 +285,28 @@ export class TaskRunner {
             // injected process, no heartbeat ever arrives and the task would sit "RUNNING"
             // for the full 25 minutes with nothing happening. Give up after 90s (3 missed
             // beats at the usual ~30s cadence) and say why.
-            watchdogTimer = setTimeout(() => {
-                if (beats > 0 || cleaned || !this.runtime.running) return;
-                logger.error(`[Task] Discord never reported progress for "${t.name}" — it isn't accepting the injected process on this client. Nothing to wait for.`);
-                this.failTask(q, t, "No heartbeat from Discord");
-                finish();
-                resolve();
-            }, HEARTBEAT_GRACE) as unknown as number;
+            // Re-armed on every beat rather than checked once, so it also catches a quest that
+            // beats a few times and then goes silent. A one-shot `beats > 0` test would let that
+            // sit RUNNING for the full 25 minutes with nothing actually happening.
+            const armWatchdog = () => {
+                clearTimeout(watchdogTimer);
+                watchdogTimer = setTimeout(() => {
+                    if (cleaned || !this.runtime.running) return;
+                    logger.error(beats === 0
+                        ? `[Task] Discord never reported progress for "${t.name}" — it isn't accepting the injected process on this client. Nothing to wait for.`
+                        : `[Task] Discord stopped reporting progress for "${t.name}" after ${beats} update(s). Giving up instead of idling.`);
+                    this.failTask(q, t, "No heartbeat from Discord");
+                    finish();
+                    resolve();
+                }, HEARTBEAT_GRACE) as unknown as number;
+            };
+            armWatchdog();
 
             const check = (d: any) => {
                 if (!this.runtime.running) { finish(); resolve(); return; }
                 if (d?.questId !== q.id) return;
                 beats++;
+                armWatchdog();
                 const prog = this.readProgress(d.userStatus, key);
                 this.cb.onProgress(q.id, { name: t.name, type, cur: prog, max: t.target, status: "RUNNING" });
                 if (prog >= t.target) {
@@ -359,7 +369,13 @@ export class TaskRunner {
      *   5) /oauth2/tokens + DELETE to clean up the grant
      */
     async bypassAchievement(q: Quest, t: TaskInfo): Promise<boolean> {
-        const appId = q.config?.application?.id;
+        // taskConfigV2 moved the app off config.application and onto the task, so reading the
+        // legacy field alone resolves null on every current quest and this bailed out before it
+        // ever tried. t.appId already carries whatever appIdFor resolved, so prefer it and keep
+        // the legacy read as the last fallback (issue #43).
+        // TaskInfo.appId is string | number (it carries a `?? 0` fallback), and this value is
+        // interpolated into discordsays URLs, so normalise to string once here.
+        const appId = String(t.appId || q.config?.application?.id || "");
         if (!appId) return false;
         // Consent gate: the OAuth bypass authorizes a third-party app on the user's account.
         // It only runs when the user explicitly enabled it in settings (default off). The toggle
@@ -370,7 +386,7 @@ export class TaskRunner {
         }
         // appId is interpolated straight into discordsays URLs. Refuse anything
         // non-numeric so a malformed/hostile id can't redirect the request elsewhere.
-        if (!/^\d+$/.test(String(appId))) {
+        if (!/^\d+$/.test(appId)) {
             logger.warn(`[Bypass] Refusing non-numeric appId "${appId}".`);
             return false;
         }

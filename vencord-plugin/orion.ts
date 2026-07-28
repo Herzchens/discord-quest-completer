@@ -231,7 +231,10 @@ async function mainLoop(): Promise<void> {
                     // instead of running a task that can't finish (issue #43).
                     if ((type === "GAME" || type === "STREAM") && !appId) {
                         logger.warn(`[Quest] "${q.config?.messages?.questName ?? q.id}" has no application id in its config — can't spoof the game. Skipping.`);
+                        // activeQuests() filters on the TaskRunner's set; RUNTIME.skipped alone is
+                        // never read, so skipping there re-detects and re-warns every cycle forever.
                         RUNTIME.skipped.add(q.id);
+                        tasks!.skipped.add(q.id);
                         continue;
                     }
                     const t: TaskInfo = {

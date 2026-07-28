@@ -1293,19 +1293,30 @@
                 // injected process, no heartbeat ever arrives and the task would sit "RUNNING"
                 // for the full 25 minutes with nothing happening. Give up after 90s (3 missed
                 // beats at the usual ~30s cadence) and say why.
-                watchdogTimer = setTimeout(() => {
-                    if (beats > 0 || cleaned || !RUNTIME.running) return;
-                    Logger.log(`[Task] Discord never reported progress for "${t.name}" — it isn't accepting the injected process on this client. Nothing to wait for.`, 'err');
-                    Tasks.failTask(q, t, 'No heartbeat from Discord');
-                    finish();
-                    resolve();
-                }, SYS.HEARTBEAT_GRACE);
+                // Re-armed on every beat rather than checked once, so it also catches a quest that
+                // beats a few times and then goes silent. A one-shot `beats > 0` test would let that
+                // sit RUNNING for the full 25 minutes while the ticker extrapolated the bar to 100%,
+                // which is the same misleading display issue #43 was about.
+                const armWatchdog = () => {
+                    clearTimeout(watchdogTimer);
+                    watchdogTimer = setTimeout(() => {
+                        if (cleaned || !RUNTIME.running) return;
+                        Logger.log(beats === 0
+                            ? `[Task] Discord never reported progress for "${t.name}" — it isn't accepting the injected process on this client. Nothing to wait for.`
+                            : `[Task] Discord stopped reporting progress for "${t.name}" after ${beats} update(s). Giving up instead of idling.`, 'err');
+                        Tasks.failTask(q, t, 'No heartbeat from Discord');
+                        finish();
+                        resolve();
+                    }, SYS.HEARTBEAT_GRACE);
+                };
+                armWatchdog();
 
                 const check = (d) => {
                     if (!RUNTIME.running) { finish(); resolve(); return; }
                     if (d?.questId !== q.id) return;
 
                     beats++;
+                    armWatchdog();
                     const prog = Tasks.readProgress(d.userStatus, key);
                     // anchor for the ticker: it extrapolates from here until the next beat
                     Logger.updateTask(q.id, {
@@ -1445,7 +1456,11 @@
         },
 
         async bypassAchievement(q, t) {
-            const appId = q.config?.application?.id;
+            // taskConfigV2 moved the app off config.application and onto the task, so reading
+            // the legacy field alone resolves null on every current quest and this bailed out
+            // before it ever tried. t.appId already carries whatever Tasks.appIdFor resolved,
+            // so prefer it and keep the legacy read as the last fallback (issue #43).
+            const appId = t.appId || q.config?.application?.id;
             if (!appId) return false;
             // appId is interpolated straight into discordsays URLs. Refuse anything
             // non-numeric so a malformed/hostile id can't redirect the request elsewhere.
