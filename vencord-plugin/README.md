@@ -14,7 +14,7 @@ A [Vencord](https://vencord.dev) userplugin port of [Orion](../README.md), the a
 
 **ACHIEVEMENT auto-bypass — confirmed working.** The userscript can run the OAuth2 authorize flow but Discord's renderer CSP blocks the final POST to `*.discordsays.com`. This plugin includes a native module (`native.ts`) that runs those POSTs in the Electron main process, where CSP doesn't apply &mdash; verified against a live `ACHIEVEMENT_IN_ACTIVITY` quest after the user passed age verification. Quests that are still age-gated (HTTP 403 code 50165 from `/proxy-tickets`) still skip; everything else now completes without launching the activity manually.
 
-**Bonus: also unlocks the standalone userscript.** v4.8.2 of `../index.js` detects this plugin's native module via `VencordNative.pluginHelpers.OrionQuests` and routes its discordsays POSTs through here. So pasting the userscript into the console works for `ACHIEVEMENT_IN_ACTIVITY` quests too, as long as this plugin is installed and enabled.
+**Bonus: also unlocks the standalone userscript.** `../index.js` detects this plugin's native module via `VencordNative.pluginHelpers.OrionQuests` and routes its discordsays POSTs through here. So pasting the userscript into the console works for `ACHIEVEMENT_IN_ACTIVITY` quests too, as long as this plugin is installed and enabled.
 
 The remaining gap from the userscript is the floating dashboard panel — progress is currently surfaced via Discord's native console + `/orion status` rather than a custom DOM overlay. That fits the Vencord usage model better, but if you want the panel back, see the open enhancement tracker.
 

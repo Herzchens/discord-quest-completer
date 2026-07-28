@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes how Orion is structured internally. It is intended for contributors and the curious, not as a user guide. Last reviewed against `index.js` **v4.9.4**.
+This document describes how Orion is structured internally. It is intended for contributors and the curious, not as a user guide. Last reviewed against `index.js` **v4.9.6**.
 
 ## High-level overview
 
@@ -86,6 +86,12 @@ Vanilla Discord **Stable** no longer exposes the live cache post-boot, so Stable
 | `WATCH_VIDEO` / `_ON_MOBILE` | Poll the video-progress endpoint with natural float timestamps at `rnd(3500,4750)`ms   | Yes                |
 | `ACTIVITY`                | Heartbeats against a voice-channel stream key                                              | Yes                |
 | `ACHIEVEMENT_IN_ACTIVITY` | Heartbeat spoof first; on rejection, the OAuth → discordsays progress forgery (below)      | Yes, with consent  |
+
+### Where the application id comes from
+
+`PLAY_ON_DESKTOP`, `STREAM_ON_DESKTOP` and `ACHIEVEMENT_IN_ACTIVITY` all need the quest's application id: the first two impersonate that app as a running process, the third builds the `{appId}.discordsays.com` host from it. Discord has moved where it lives. It used to sit once per quest on `config.application.id`; under `taskConfigV2` it sits per task, at `config.taskConfigV2.tasks.<KEY>.applications[0].id`. `Tasks.appIdFor` reads the task-level path first and falls back to the legacy field, and every consumer goes through the id resolved onto the task rather than re-reading the config.
+
+This matters because the failure is silent. Reading only the legacy field yields `0`/`null`, which produced a fake process Discord could never match to the quest (no heartbeat, quest frozen at 0%) and made the achievement bypass return early without attempting anything ([#43](https://github.com/nyxxbit/discord-quest-completer/issues/43)). Game/stream quests with no resolvable id are now skipped loudly instead of run, and a game/stream task that gets no heartbeat within 90s of the last one aborts with a reason rather than idling until the 25-minute timeout.
 
 `ACHIEVEMENT_IN_ACTIVITY` is validated by the activity backend (`discordsays.com`), not the client, so there is no client heartbeat to forge — Discord rejects those with 403. The bypass instead authorizes against that backend and reports progress to it directly. Quests for age-gated or delisted activities still can't be done: `/proxy-tickets` returns HTTP 403 code `50165` and the activity won't launch even manually, so they're skipped.
 
