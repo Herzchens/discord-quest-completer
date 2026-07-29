@@ -2,9 +2,9 @@
 
 # Orion
 
-**Auto-complete every Discord Quest in seconds** &mdash; v4.9.6
+**Auto-complete every Discord Quest in seconds** &mdash; v4.9.7
 
-[![Version](https://img.shields.io/badge/v4.9.6-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer)
+[![Version](https://img.shields.io/badge/v4.9.7-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -198,6 +198,9 @@ Contributions are welcome &mdash; bug reports, PRs, and docs. Start with [`CONTR
 ---
 
 ## Changelog
+
+### v4.9.7
+- **The repo installs as a Vencord userplugin now** &mdash; paste `https://github.com/nyxxbit/discord-quest-completer` into nin0's `UserpluginInstaller` and it clones, builds and self-updates from there, no manual clone or file copying ([#42](https://github.com/nyxxbit/discord-quest-completer/issues/42)). That installer does a plain `git clone` into `src/userplugins`, and Vencord's build only reads `index.ts(x)` and `native.ts` from the top level of a plugin folder, so the plugin sources had to move out of `vencord-plugin/` and up to the repo root; a subdirectory layout cannot work with either. `vencord-plugin/README.md` moved to [`docs/VENCORD-PLUGIN.md`](docs/VENCORD-PLUGIN.md). The userscript keeps its path and its raw URL and is not part of the plugin build &mdash; both esbuild and the installer resolve `index.tsx` ahead of `index.js`. A CI job now clones Vencord, checks this repo out the way the installer would, builds, and asserts the plugin reached the renderer and main-process bundles with the slash command registered and no userscript leakage; it builds against Vencord's default branch weekly, so an upstream change that breaks the plugin shows up there instead of in a bug report. The quest engine itself is unchanged this release.
 
 ### v4.9.6
 - **Fix: game quests never progressed** &mdash; Discord's `taskConfigV2` moved the application off the quest config and onto each task (`tasks.PLAY_ON_DESKTOP.applications[0].id`); `config.application.id` no longer exists, so every game/stream quest fell through to a `?? 0` fallback and injected a process claiming to be application `0`. Discord could never match that to the quest, so it never sent a single heartbeat and the quest sat at 0% ([#43](https://github.com/nyxxbit/discord-quest-completer/issues/43)). This hit Canary first and has since reached Stable. Canary also derives quest eligibility from `getVisibleGame` / `getVisibleRunningGames` / `getRunningDiscordApplicationIds` / `getCandidateGames`, which the old patch left empty &mdash; all four are now patched when present and restored on cleanup. Two things had been hiding the failure: the dashboard ticker incremented progress locally every second regardless of heartbeats, so a quest earning nothing still showed a bar climbing to 100%, and nothing failed until the 25-minute timer. The ticker now extrapolates only from the last real heartbeat, so it can't run past what Discord reported, and a game/stream task with no heartbeat inside 90s aborts with a clear message. Progress also reads the task key detected from the config instead of a hardcoded `PLAY_ON_DESKTOP` (so `PLAY_ON_DESKTOP_V2` resolves) and seeds from the server's stored value on start. The legacy `config.application.id` path remains as a fallback for clients that haven't picked up the change yet.
