@@ -10,35 +10,35 @@
 import { ApplicationCommandInputType, ApplicationCommandOptionType, sendBotMessage } from "@api/Commands";
 import definePlugin from "@utils/types";
 
-import { readDashboard, startOrion, stopOrion } from "./orion";
+import { isEngineRunning, readDashboard, startOrion, stopOrion } from "./orion";
 import { settings } from "./settings";
 
-let isRunning = false;
-
+// No local `isRunning` mirror: a second flag can disagree with the engine, and when it did,
+// /orion stop refused to stop an engine that was still up. startOrion() sets the engine flag
+// synchronously before its first await, so this reads true immediately after the call below.
 async function ensureStart(): Promise<string> {
-    if (isRunning) return "Already running.";
-    isRunning = true;
-    // fire and forget — main loop awaits internally; lifecycle handled by stopOrion()
-    startOrion().finally(() => { isRunning = false; });
+    if (isEngineRunning()) return "Already running.";
+    // fire and forget — main loop awaits internally; teardown handled by startOrion's finally
+    startOrion();
     return "Started.";
 }
 
 function ensureStop(): string {
-    if (!isRunning) return "Not running.";
+    if (!isEngineRunning()) return "Not running.";
     stopOrion();
-    isRunning = false;
     return "Stopped.";
 }
 
 function statusSummary(): string {
+    const running = isEngineRunning();
     const entries = readDashboard();
-    if (!isRunning && entries.length === 0) return "Idle. Use `/orion start` to begin.";
-    if (entries.length === 0) return isRunning ? "Running. No active tasks yet." : "Idle.";
+    if (!running && entries.length === 0) return "Idle. Use `/orion start` to begin.";
+    if (entries.length === 0) return running ? "Running. No active tasks yet." : "Idle.";
     const lines = entries.map(e => {
         const pct = e.max > 0 ? Math.min(100, (e.cur / e.max) * 100).toFixed(0) : "?";
         return `• ${e.name}: ${e.status} (${pct}%)`;
     });
-    return [`${isRunning ? "Running" : "Stopped"}, ${entries.length} task(s):`, ...lines].join("\n");
+    return [`${running ? "Running" : "Stopped"}, ${entries.length} task(s):`, ...lines].join("\n");
 }
 
 export default definePlugin({

@@ -14,9 +14,8 @@ import { Logger } from "@utils/Logger";
 import type { PluginNative } from "@utils/types";
 
 import type { Patcher } from "./patcher";
-import type { Traffic } from "./traffic";
 import { settings } from "./settings";
-import { isSkippableQuest } from "./traffic";
+import type { Traffic } from "./traffic";
 import type { DetectedTask, FakeGame, OrionRuntime, Quest, Stores, TaskInfo, TaskType } from "./types";
 import { rnd, sanitize, sleep } from "./util";
 
@@ -47,6 +46,12 @@ export class TaskRunner {
     private patcher: Patcher;
     private runtime: OrionRuntime;
     private cb: TaskCallbacks;
+    /**
+     * Real getStreamerActiveStreamMetadata, stashed once like Patcher does with RunStore.
+     * May legitimately be undefined on builds that don't expose it — see the restore in generic().
+     */
+    private streamReal: any;
+    private streamSpoofs = 0;
 
     constructor(stores: Stores, traffic: Traffic, patcher: Patcher, runtime: OrionRuntime, cb: TaskCallbacks) {
         this.stores = stores;
@@ -54,6 +59,7 @@ export class TaskRunner {
         this.patcher = patcher;
         this.runtime = runtime;
         this.cb = cb;
+        this.streamReal = stores.StreamStore?.getStreamerActiveStreamMetadata;
     }
 
     /**
@@ -241,15 +247,21 @@ export class TaskRunner {
             let beats = 0;
 
             if (type === "STREAM") {
-                const real = this.stores.StreamStore?.getStreamerActiveStreamMetadata;
+                // Restore from the original captured in the constructor, never from whatever is
+                // installed now: with concurrency > 1 a second STREAM task would otherwise stash
+                // the first task's spoof and "restore" that, leaving the store patched after the
+                // engine stops. Refcounted so the last task out puts the real method back — and
+                // it restores even when the original was undefined, since assigning undefined
+                // back is the correct revert (same reasoning as index.js).
                 if (this.stores.StreamStore) {
+                    this.streamSpoofs++;
                     this.stores.StreamStore.getStreamerActiveStreamMetadata = () => ({
                         id: gameData.id, pid, sourceName: gameData.name,
                     });
                 }
                 cleanupHook = () => {
-                    if (this.stores.StreamStore && real) {
-                        this.stores.StreamStore.getStreamerActiveStreamMetadata = real;
+                    if (this.stores.StreamStore && this.streamSpoofs > 0 && --this.streamSpoofs === 0) {
+                        this.stores.StreamStore.getStreamerActiveStreamMetadata = this.streamReal;
                     }
                 };
             } else {
@@ -271,8 +283,15 @@ export class TaskRunner {
                 clearTimeout(watchdogTimer);
                 try { cleanupHook(); } catch (e: any) { logger.debug(`[Task] Cleanup: ${e?.message}`); }
                 try { this.stores.Dispatcher?.unsubscribe(HEARTBEAT_EVT, check); } catch (e: any) { logger.debug(`[Dispatcher] Unsubscribe failed: ${e?.message}`); }
-                this.runtime.cleanups.delete(finish);
+                this.runtime.cleanups.delete(abort);
             };
+
+            // What shutdown runs. finish() alone tears down the timers that would otherwise have
+            // resolved this promise, so registering it bare left the task pending forever: the
+            // cycle loop stayed parked on Promise.all and startOrion never returned. Kept separate
+            // from finish() so the completion path can still wait for onComplete (auto-claim)
+            // before resolving.
+            const abort = () => { finish(); resolve(); };
 
             safetyTimer = setTimeout(() => {
                 if (this.runtime.running) this.failTask(q, t, "Timeout exceeded (25m)");
@@ -316,7 +335,7 @@ export class TaskRunner {
             };
 
             this.stores.Dispatcher?.subscribe(HEARTBEAT_EVT, check);
-            this.runtime.cleanups.add(finish);
+            this.runtime.cleanups.add(abort);
         });
     }
 

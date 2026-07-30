@@ -107,6 +107,11 @@ export class Traffic {
                             if (this.isRunning()) {
                                 this.queue.push(req);
                                 this.process();
+                            } else {
+                                // settle on shutdown so an awaiter doesn't hang forever — this
+                                // request is no longer in the queue, so the drain path above
+                                // can't reject it for us (matches index.js)
+                                req.reject(new Error("Shutdown"));
                             }
                         }, delay + retryJitter);
                     }
