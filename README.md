@@ -2,9 +2,9 @@
 
 # Orion
 
-**Auto-complete every Discord Quest in seconds** &mdash; v4.9.7
+**Auto-complete every Discord Quest in seconds** &mdash; v4.9.10
 
-[![Version](https://img.shields.io/badge/v4.9.7-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer)
+[![Version](https://img.shields.io/badge/v4.9.10-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -198,6 +198,9 @@ Contributions are welcome &mdash; bug reports, PRs, and docs. Start with [`CONTR
 ---
 
 ## Changelog
+
+### v4.9.10
+- **Fix: userscript lifecycle and transport-fallback issues** &mdash; the `>` dashboard hotkey registered a document-level listener that shutdown never detached, so it outlived the dashboard and stacked one more copy on every paste, each closing over a dead overlay. Clicking **STOP** and pasting again within a second was also a dead end: the re-entry guard stayed held for the full grace period, so the new paste was refused with "Already running." while the overlay it had just re-shown was removed a moment later by the old timer, leaving nothing on screen; the guard is released immediately now, and the teardown holds references to its own nodes so it can no longer delete a newer dashboard's stylesheet. The manual **CLAIM REWARD** button could stick at "WAITING..." for the rest of the session when the claim endpoint answered 2xx without `claimed_at` &mdash; neither the success branch nor the catch fired, so the state was never reset. The localhost-relay probe cached its answer for the whole run in both directions, so a relay started mid-run was never picked up and one that died was still used; it now re-probes on a one-minute TTL and drops the cached answer if the relay stops responding mid-POST, letting the next transport take over. The `DiscordNative` fallback no longer speculatively invokes `fileManager.fetchURL` or `processUtils.fetch` &mdash; neither is an HTTP client, and calling privileged IPC with a POST-shaped argument risks side effects the return-shape check cannot detect. Quest ids are now escaped where they reach `innerHTML`, matching the rule already applied to quest and reward names.
 
 ### v4.9.7
 - **The repo installs as a Vencord userplugin now** &mdash; paste `https://github.com/nyxxbit/discord-quest-completer` into nin0's `UserpluginInstaller` and it clones, builds and self-updates from there, no manual clone or file copying ([#42](https://github.com/nyxxbit/discord-quest-completer/issues/42)). That installer does a plain `git clone` into `src/userplugins`, and Vencord's build only reads `index.ts(x)` and `native.ts` from the top level of a plugin folder, so the plugin sources had to move out of `vencord-plugin/` and up to the repo root; a subdirectory layout cannot work with either. `vencord-plugin/README.md` moved to [`docs/VENCORD-PLUGIN.md`](docs/VENCORD-PLUGIN.md). The userscript keeps its path and its raw URL and is not part of the plugin build &mdash; both esbuild and the installer resolve `index.tsx` ahead of `index.js`. A CI job now clones Vencord, checks this repo out the way the installer would, builds, and asserts the plugin reached the renderer and main-process bundles with the slash command registered and no userscript leakage; it builds against Vencord's default branch weekly, so an upstream change that breaks the plugin shows up there instead of in a bug report. The quest engine itself is unchanged this release.
