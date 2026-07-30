@@ -46,6 +46,10 @@ export default definePlugin({
     description:
         "Auto-complete every Discord Quest in seconds — game, video, stream, activity, and achievement quests.",
     authors: [{ name: "syntt_", id: 1419678867005767783n }],
+    // UserSettingsAPI is not enabled by default, and getUserSetting() throws outright
+    // for plugins that don't declare it — patcher.ts needs it to flip showCurrentGame
+    // off for the hideActivity setting.
+    dependencies: ["UserSettingsAPI"],
     settings,
 
     commands: [

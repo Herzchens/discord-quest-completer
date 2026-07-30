@@ -10,7 +10,7 @@ A [Vencord](https://vencord.dev) userplugin port of [Orion](../README.md), the a
 
 ## Status
 
-**Functional, in sync with userscript v4.9.7.** Quest enrollment, all five task handlers (`VIDEO` / `GAME` / `STREAM` / `ACTIVITY` / `ACHIEVEMENT`), traffic queue with backoff, RunStore patching, and auto-claim are ported. A `/orion` slash command provides start / stop / status from any Discord channel.
+**Functional, in sync with userscript v4.9.8.** Quest enrollment, all five task handlers (`VIDEO` / `GAME` / `STREAM` / `ACTIVITY` / `ACHIEVEMENT`), traffic queue with backoff, RunStore patching, and auto-claim are ported. A `/orion` slash command provides start / stop / status from any Discord channel.
 
 **ACHIEVEMENT auto-bypass — confirmed working.** The userscript can run the OAuth2 authorize flow but Discord's renderer CSP blocks the final POST to `*.discordsays.com`. This plugin includes a native module (`native.ts`) that runs those POSTs in the Electron main process, where CSP doesn't apply &mdash; verified against a live `ACHIEVEMENT_IN_ACTIVITY` quest after the user passed age verification. Quests that are still age-gated (HTTP 403 code 50165 from `/proxy-tickets`) still skip; everything else now completes without launching the activity manually.
 
@@ -93,7 +93,7 @@ Exposed in Vencord's plugin settings UI. Persisted via Vencord's `DataStore`.
 | --- | --- | --- |
 | Auto Start | `false` | (none — userscript starts on paste) |
 | Try to claim reward | `false` | `RUNTIME.autoClaim` (picker toggle) |
-| Hide activity | `false` | `CONFIG.HIDE_ACTIVITY` |
+| Hide activity | `false` | `CONFIG.HIDE_ACTIVITY` &mdash; both turn Discord's own `status.showCurrentGame` off while quests run, restoring it on stop (needs `UserSettingsAPI`, declared as a plugin dependency) |
 | Game concurrency | `1` | inferred from `runConcurrent(queues.game, 1)` |
 | Video concurrency | `2` | inferred from `runConcurrent(queues.video, 2)` |
 | Verbose logging | `false` | (debug logs) |

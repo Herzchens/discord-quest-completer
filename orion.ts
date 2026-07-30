@@ -314,7 +314,8 @@ export async function startOrion(): Promise<void> {
 
     try {
         stores = loadStores();
-        patcher = new Patcher(stores, !!settings.store.hideActivity);
+        // pass a getter, not a snapshot — the setting is toggleable mid-run
+        patcher = new Patcher(stores, () => !!settings.store.hideActivity);
         traffic = new Traffic(stores.API, () => RUNTIME.running);
         tasks = new TaskRunner(stores, traffic, patcher, RUNTIME, {
             onProgress: (id, info) => setEntry(id, info),
