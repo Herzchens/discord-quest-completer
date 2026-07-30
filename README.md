@@ -2,9 +2,9 @@
 
 # Orion
 
-**Auto-complete every Discord Quest in seconds** &mdash; v4.9.7
+**Auto-complete every Discord Quest in seconds** &mdash; v4.9.9
 
-[![Version](https://img.shields.io/badge/v4.9.7-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer)
+[![Version](https://img.shields.io/badge/v4.9.9-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -198,6 +198,9 @@ Contributions are welcome &mdash; bug reports, PRs, and docs. Start with [`CONTR
 ---
 
 ## Changelog
+
+### v4.9.9
+- **Fix: stopping a quest part-way locked it out of every later start** &mdash; the plugin's dashboard registry is module state that outlives the engine, and `stopOrion()` never touched it, so a quest interrupted by `/orion stop` kept an entry reading `RUNNING`. The cycle loop skips quests in that state, so the queue came up empty on every subsequent `/orion start` while `/orion status` still reported the phantom task. In-flight entries are retired to `STOPPED` on shutdown, late progress updates can no longer re-mark a quest as running once the engine is down, and rows from earlier runs are pruned at start instead of at stop so results stay readable after a run. Auditing the rest of the plugin's module state for the same pattern turned up five more, two of which could hang the cycle loop outright: a rate-limited request rescheduled past a shutdown was dropped without settling its promise, so the awaiting task waited forever (the userscript already rejected with `Shutdown` here &mdash; the port had lost that branch); and a stopped `GAME`/`STREAM` task never resolved at all, because the shutdown cleanup cleared the very timers that would have resolved it, leaving the loop parked and the engine's own teardown unreachable. Either hang then desynced the slash command's private `isRunning` flag from the engine, at which point `/orion stop` answered "Not running." while the engine was still up &mdash; it now reads the engine directly. Also fixed in both engines: two overlapping `STREAM` tasks stashed each other's spoofed `getStreamerActiveStreamMetadata` and one of them restored a fake permanently, so the original is captured once and the spoof refcounted.
 
 ### v4.9.7
 - **The repo installs as a Vencord userplugin now** &mdash; paste `https://github.com/nyxxbit/discord-quest-completer` into nin0's `UserpluginInstaller` and it clones, builds and self-updates from there, no manual clone or file copying ([#42](https://github.com/nyxxbit/discord-quest-completer/issues/42)). That installer does a plain `git clone` into `src/userplugins`, and Vencord's build only reads `index.ts(x)` and `native.ts` from the top level of a plugin folder, so the plugin sources had to move out of `vencord-plugin/` and up to the repo root; a subdirectory layout cannot work with either. `vencord-plugin/README.md` moved to [`docs/VENCORD-PLUGIN.md`](docs/VENCORD-PLUGIN.md). The userscript keeps its path and its raw URL and is not part of the plugin build &mdash; both esbuild and the installer resolve `index.tsx` ahead of `index.js`. A CI job now clones Vencord, checks this repo out the way the installer would, builds, and asserts the plugin reached the renderer and main-process bundles with the slash command registered and no userscript leakage; it builds against Vencord's default branch weekly, so an upstream change that breaks the plugin shows up there instead of in a bug report. The quest engine itself is unchanged this release.
