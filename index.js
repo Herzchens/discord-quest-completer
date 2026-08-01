@@ -1103,6 +1103,8 @@
 
     const Tasks = {
         skipped: new Set(),  // quest IDs that returned 4xx — no point retrying
+        _streamReal: undefined,  // untouched StreamStore method, captured before the first spoof
+        _streamSpoofs: 0,        // active STREAM tasks holding the spoof
 
         // userStatus.progress is a plain object over REST, but dispatched payloads go through
         // the client's own transform first, so the shape isn't ours to assume. Defensive: if
@@ -1302,14 +1304,22 @@
                 let beats = 0;
 
                 if (type === "STREAM") {
-                    const real = Mods.StreamStore?.getStreamerActiveStreamMetadata;
                     if (Mods.StreamStore) {
+                        // Capture the untouched method once and refcount the spoof. Stashing it
+                        // per-task meant a second concurrent STREAM task stashed the first task's
+                        // spoof and later "restored" that, leaving the store patched for good.
+                        if (Tasks._streamSpoofs === 0) Tasks._streamReal = Mods.StreamStore.getStreamerActiveStreamMetadata;
+                        Tasks._streamSpoofs++;
                         Mods.StreamStore.getStreamerActiveStreamMetadata = () => ({ id: gameData.id, pid, sourceName: gameData.name });
                     }
                     // restore unconditionally when the store exists — assigning back an
-                    // undefined `real` is the correct revert. Guarding on `real` being truthy
+                    // undefined original is the correct revert. Guarding on it being truthy
                     // would leave our fake installed when the method was undefined at patch time.
-                    cleanupHook = () => { if (Mods.StreamStore) Mods.StreamStore.getStreamerActiveStreamMetadata = real; };
+                    cleanupHook = () => {
+                        if (Mods.StreamStore && Tasks._streamSpoofs > 0 && --Tasks._streamSpoofs === 0) {
+                            Mods.StreamStore.getStreamerActiveStreamMetadata = Tasks._streamReal;
+                        }
+                    };
                 } else {
                     Patcher.add(game);
                     cleanupHook = () => Patcher.remove(game);
@@ -1331,8 +1341,14 @@
                     try { Mods.Dispatcher?.unsubscribe(CONST.EVT.HEARTBEAT, check); } catch (e) {
                         Logger.log(`[Dispatcher] Unsubscribe failed: ${e.message}`, 'debug');
                     }
-                    RUNTIME.cleanups.delete(finish);
+                    RUNTIME.cleanups.delete(abort);
                 };
+
+                // What shutdown runs. finish() alone clears the timers that would otherwise have
+                // resolved this promise, so registering it bare left the task pending forever.
+                // Separate from finish() so the completion path can still await onComplete
+                // (auto-claim) before resolving.
+                const abort = () => { finish(); resolve(); };
 
                 safetyTimer = setTimeout(() => {
                     if (RUNTIME.running) Tasks.failTask(q, t, 'Timeout exceeded (25m)');
@@ -1384,7 +1400,7 @@
                 };
 
                 Mods.Dispatcher?.subscribe(CONST.EVT.HEARTBEAT, check);
-                RUNTIME.cleanups.add(finish);
+                RUNTIME.cleanups.add(abort);
             });
         },
 

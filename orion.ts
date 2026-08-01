@@ -16,7 +16,7 @@ import { FluxDispatcher, RestAPI } from "@webpack/common";
 import { Patcher } from "./patcher";
 import { settings } from "./settings";
 import { TaskRunner } from "./tasks";
-import { Traffic } from "./traffic";
+import { isSkippableQuest, Traffic } from "./traffic";
 import type { OrionRuntime, Quest, Stores, TaskInfo, TaskType } from "./types";
 import { rnd, sleep } from "./util";
 
@@ -108,12 +108,22 @@ export function subscribeDashboard(fn: () => void): () => void {
 export function readDashboard(): DashboardEntry[] {
     return Array.from(dashboard.values());
 }
+/** Single source of truth for "is the engine up" — index.tsx used to keep its own flag. */
+export function isEngineRunning(): boolean {
+    return RUNTIME.running;
+}
 function emitDashboard(): void {
     for (const fn of dashboardListeners) {
         try { fn(); } catch (e: any) { logger.debug(`[UI] listener threw: ${e?.message}`); }
     }
 }
 function setEntry(id: string, partial: Partial<DashboardEntry> & { name: string; type: TaskType; cur: number; max: number; status: string; }): void {
+    // A stopped engine must never leave an in-flight status behind: mainLoop skips quests
+    // whose entry reads RUNNING, so a late poll landing after shutdown would lock that
+    // quest out of every future start. Terminal updates (COMPLETED/CLAIMED/FAILED) still
+    // get through — those are results worth keeping.
+    if (!RUNTIME.running && (partial.status === "RUNNING" || partial.status === "QUEUE")) return;
+
     const prev = dashboard.get(id) ?? { id, claimable: false, actionRequired: null } as DashboardEntry;
     dashboard.set(id, { ...prev, id, ...partial });
     emitDashboard();
@@ -272,7 +282,8 @@ async function mainLoop(): Promise<void> {
                                 await traffic!.enqueue(`/quests/${q.id}/enroll`, { location: 11, is_targeted: false });
                                 await sleep(rnd(800, 1500));
                             } catch (e: any) {
-                                if (e?.status === 404 || e?.status === 403 || e?.status === 410) {
+                                // one definition of "this quest is gone" — traffic.ts owns it
+                                if (isSkippableQuest(e)) {
                                     RUNTIME.skipped.add(q.id);
                                     tasks!.skipped.add(q.id);
                                     logger.warn(`[Enroll] ${t.name} unavailable (${e.status}). Skipping.`);
@@ -325,6 +336,13 @@ export async function startOrion(): Promise<void> {
     }
     RUNTIME.running = true;
 
+    // Drop finished/aborted rows from earlier runs. Pruned here rather than on stop so results
+    // stay readable after a run ends, but a fresh start never reports a previous session's tasks.
+    for (const [id, e] of dashboard) {
+        if (e.status !== "RUNNING" && e.status !== "QUEUE") dashboard.delete(id);
+    }
+    emitDashboard();
+
     logger.info("Starting OrionQuests");
 
     try {
@@ -368,6 +386,14 @@ export function stopOrion(): void {
     // Detach before clean(): the listener holds the patcher, and a settings change arriving
     // after teardown would re-enter a torn-down engine.
     SettingsStore.removeChangeListener(hideActivityPath(), onHideActivityChanged);
+
+    // Retire whatever was still in flight. Without this, a quest stopped part-way keeps a
+    // RUNNING entry in the registry, mainLoop's "already running" guard skips it on every
+    // later start, and the queue comes up empty while /orion status still reports it.
+    for (const [id, e] of dashboard) {
+        if (e.status === "RUNNING" || e.status === "QUEUE") dashboard.set(id, { ...e, status: "STOPPED" });
+    }
+    emitDashboard();
 
     try { patcher?.clean(); } catch (e: any) { logger.error("Patcher cleanup threw:", e); }
     patcher = null;
