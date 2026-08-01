@@ -5,12 +5,13 @@
 
     const CONFIG = {
         NAME: "Orion",
-        VERSION: "v4.9.7",
+        VERSION: "v4.9.8",
         THEME: "#5865F2",             // discord blurple
         SUCCESS: "#3BA55C",
         WARN: "#faa61a",
         ERR: "#f04747",
-        HIDE_ACTIVITY: false,           // suppress RPC status from friends list
+        HIDE_ACTIVITY: false,           // hide "Playing ..." while quests run (turns Discord's own
+                                        // showCurrentGame off for the duration, restores it after)
         MAX_LOG_ITEMS: 60               // UI log limit
     };
 
@@ -928,8 +929,17 @@
 
     let Mods = {};  // populated by loadModules() — holds Discord webpack internals
 
+    /* HIDE_ACTIVITY note: skipping our own LOCAL_ACTIVITY_UPDATE dispatch is not enough
+       to hide the status. Discord builds the "Playing X" presence from the store itself —
+       LocalActivityStore/ActivityTrackingStore read getVisibleRunningGames()/getVisibleGame(),
+       which we patch below for quest eligibility (issue #43). So the only way to stay
+       invisible while keeping the spoof is to turn Discord's own status.showCurrentGame off
+       for the duration and restore it on cleanup. Same setting Vencord's
+       GameActivityToggle drives. */
+
     const Patcher = {
         games: [], real: {}, active: false,
+        savedShowCurrentGame: null,  // value before we forced it off; null = not suppressed
 
         // Overriding getRunningGames alone is no longer enough. Canary derives quest
         // eligibility from the "visible"/"candidate" views, and a game absent from those
@@ -977,10 +987,49 @@
             }
         },
 
+        // Force showCurrentGame off while a fake game is up and HIDE_ACTIVITY is on,
+        // restore it once the last one goes away.
+        syncPresenceSuppression() {
+            const setting = Mods.ShowCurrentGame;
+            const shouldSuppress = CONFIG.HIDE_ACTIVITY && this.games.length > 0;
+
+            if (!setting) {
+                if (shouldSuppress) Logger.log('[Patcher] status.showCurrentGame not found — cannot hide activity.', 'warn');
+                return;
+            }
+
+            if (shouldSuppress && this.savedShowCurrentGame === null) {
+                try {
+                    // undefined = couldn't read it; assume it was on (Discord's default) so
+                    // cleanup restores rather than silently leaving the user's status off
+                    this.savedShowCurrentGame = setting.getSetting() !== false;
+                    if (this.savedShowCurrentGame) {
+                        Promise.resolve(setting.updateSetting(false)).catch(e =>
+                            Logger.log(`[Patcher] Could not turn showCurrentGame off — activity stays visible: ${e.message}`, 'warn'));
+                    }
+                } catch (e) {
+                    this.savedShowCurrentGame = null;
+                    Logger.log(`[Patcher] showCurrentGame read failed — cannot hide activity: ${e.message}`, 'warn');
+                }
+            } else if (!shouldSuppress && this.savedShowCurrentGame !== null) {
+                const restore = this.savedShowCurrentGame;
+                this.savedShowCurrentGame = null;
+                if (restore) {
+                    try {
+                        Promise.resolve(setting.updateSetting(true)).catch(e =>
+                            Logger.log(`[Patcher] Failed to restore showCurrentGame — re-enable "Display current activity as a status message" in Discord settings: ${e.message}`, 'err'));
+                    } catch (e) {
+                        Logger.log(`[Patcher] Failed to restore showCurrentGame — re-enable "Display current activity as a status message" in Discord settings: ${e.message}`, 'err');
+                    }
+                }
+            }
+        },
+
         add(g) {
             if (this.games.some(x => x.pid === g.pid)) return;
             this.games.push(g);
             this.toggle(true);
+            this.syncPresenceSuppression();
             this.dispatch([g], []);
             this.rpc(g);
         },
@@ -991,6 +1040,7 @@
             if (this.games.length === before) return;
 
             this.dispatch([], [g]);
+            this.syncPresenceSuppression();
             if (!this.games.length) {
                 this.toggle(false);
                 this.rpc(null);
@@ -1037,6 +1087,8 @@
         clean() {
             this.games = [];
             this.toggle(false);
+            // games emptied first, so this always restores showCurrentGame
+            this.syncPresenceSuppression();
             this.rpc(null);
         }
     };
@@ -1745,6 +1797,60 @@
        Dispatcher and API use structural checks instead.
     ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── */
 
+    /* Adapter over Discord's protobuf user settings, used to flip status.showCurrentGame
+       for HIDE_ACTIVITY. Deliberately not going through Vencord's UserSettingsAPI: that
+       one throws unless the *calling plugin* declared it as a dependency, and a console
+       script has no plugin manifest. The proto action creators are identified by
+       ProtoClass.typeName (Vencord's own discriminator) or the updateAsync+type===1 pair
+       (BetterDiscord's), and the BoolValue wrapper by its proto typeName — the setting
+       fields are wrapper messages, not raw booleans. */
+    function findShowCurrentGameSetting(moduleCache) {
+        if (!moduleCache) return undefined;
+
+        let actions, delay, BoolValue;
+        for (const m of Object.values(moduleCache)) {
+            try {
+                const exp = m?.exports;
+                if (!exp || typeof exp !== 'object') continue;
+
+                for (const key of Object.keys(exp)) {
+                    const p = exp[key];
+                    if (!p) continue;
+
+                    // Match by proto typeName over any export, not by an export named BoolValue:
+                    // the key is minified on some builds, and then a name-only lookup misses and
+                    // the write below throws. This is BetterDiscord's discriminator.
+                    if (!BoolValue && typeof p.create === 'function'
+                        && String(p.typeName ?? '').includes('Bool')) BoolValue = p;
+
+                    if (!actions && typeof p.updateAsync === 'function'
+                        && (p.ProtoClass?.typeName?.endsWith('.PreloadedUserSettings') || p.type === 1)) {
+                        actions = p;
+                        // enum member name varies; 0 is the "act now" delay every build accepts
+                        delay = exp.UserSettingsDelay?.INFREQUENT_USER_ACTION ?? 0;
+                    }
+                }
+                if (actions && BoolValue) break;  // module cache is large — stop once both are in hand
+            } catch { }
+        }
+        if (!actions) return undefined;
+        if (!BoolValue) Logger.log('[Patcher] BoolValue proto type not found — hiding activity will only work if the setting already exists.', 'debug');
+
+        return {
+            // undefined when the shape moved — callers treat that as "unknown, assume on"
+            getSetting: () => actions.getCurrentValue?.()?.status?.showCurrentGame?.value,
+            updateSetting: value => actions.updateAsync('status', settings => {
+                if (settings.showCurrentGame && typeof settings.showCurrentGame.value === 'boolean') {
+                    settings.showCurrentGame.value = value;
+                } else if (BoolValue) {
+                    settings.showCurrentGame = BoolValue.create({ value });
+                } else {
+                    throw new Error('BoolValue proto type not found');
+                }
+            }, delay)
+        };
+    }
+
     function loadModules() {
         try {
             // === VENCORD USAGE ===
@@ -1773,7 +1879,9 @@
                     GuildChanStore: W.findStore('GuildChannelStore'),
                     Dispatcher: W.Common?.FluxDispatcher || W.findByProps('dispatch', 'subscribe', 'flushWaitQueue'),
                     API: W.Common?.RestAPI || W.findByProps('get', 'post', 'del'),
-                    Router: routerModule
+                    Router: routerModule,
+                    // Vencord exposes the raw webpack require, so the same cache scan works here
+                    ShowCurrentGame: findShowCurrentGameSetting(W.cache || W.wreq?.c)
                 };
 
                 const required = ['QuestStore', 'API', 'Dispatcher', 'RunStore'];
@@ -1895,7 +2003,8 @@
                 GuildChanStore: findStore('GuildChannelStore'),
                 Dispatcher: findDispatcher(),
                 API: findAPI(),
-                Router: findRouter()
+                Router: findRouter(),
+                ShowCurrentGame: findShowCurrentGameSetting(req.c)
             };
 
             const required = ['QuestStore', 'API', 'Dispatcher', 'RunStore'];

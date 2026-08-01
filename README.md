@@ -2,9 +2,9 @@
 
 # Orion
 
-**Auto-complete every Discord Quest in seconds** &mdash; v4.9.7
+**Auto-complete every Discord Quest in seconds** &mdash; v4.9.8
 
-[![Version](https://img.shields.io/badge/v4.9.7-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer)
+[![Version](https://img.shields.io/badge/v4.9.8-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -128,7 +128,10 @@ Advanced settings can still be tweaked in the `CONFIG` object before pasting:
 
 ```js
 const CONFIG = {
-    HIDE_ACTIVITY: false,        // suppress "Playing..." from friends list
+    HIDE_ACTIVITY: false,        // hide "Playing..." from friends list. Turns Discord's own
+                                 // "Display current activity as a status message" off while
+                                 // quests run and restores it afterwards
+
     MAX_LOG_ITEMS: 60,           // UI log limit
 };
 ```
@@ -198,6 +201,9 @@ Contributions are welcome &mdash; bug reports, PRs, and docs. Start with [`CONTR
 ---
 
 ## Changelog
+
+### v4.9.8
+- **Fix: hide-activity never hid anything** &mdash; both engines implemented it by skipping their own `LOCAL_ACTIVITY_UPDATE` dispatch, but that event only carries RPC-socket activities. Discord builds the "Playing X" presence from the running-game store itself (`LocalActivityStore` / `ActivityTrackingStore` read `getVisibleGame` / `getVisibleRunningGames`), which is exactly what the Patcher started overriding in v4.9.6 to get heartbeats flowing again ([#43](https://github.com/nyxxbit/discord-quest-completer/issues/43)) &mdash; so since that release the spoof itself published the status and the toggle was a no-op. Both engines now turn Discord's own `status.showCurrentGame` off while a fake game is up and restore the previous value on cleanup, leaving the store spoof (and therefore quest eligibility) untouched. The friends-list entry reads "Not Sharing" while quests run and progress advances normally. The plugin goes through Vencord's `UserSettingsAPI`, which it now declares as a dependency &mdash; `getUserSetting()` throws for plugins that don't, and that API is not enabled by default; the userscript reaches the protobuf settings directly, since a console script has no plugin manifest to declare anything with. The plugin also read the setting once at engine start, so toggling it mid-run did nothing until stop/start; it is read live now, and the plugin acts on the change the moment it is made. Reading it live is necessary but not sufficient: suppression is recomputed when a fake game is added or removed, and a game quest holds one for up to 25 minutes, so a toggle mid-quest would still have sat there doing nothing. The plugin subscribes to the setting and re-evaluates on the spot, detaching the listener on stop. Known limitation: if Discord is force-killed mid-run, cleanup never runs and the setting stays off until re-enabled by hand.
 
 ### v4.9.7
 - **The repo installs as a Vencord userplugin now** &mdash; paste `https://github.com/nyxxbit/discord-quest-completer` into nin0's `UserpluginInstaller` and it clones, builds and self-updates from there, no manual clone or file copying ([#42](https://github.com/nyxxbit/discord-quest-completer/issues/42)). That installer does a plain `git clone` into `src/userplugins`, and Vencord's build only reads `index.ts(x)` and `native.ts` from the top level of a plugin folder, so the plugin sources had to move out of `vencord-plugin/` and up to the repo root; a subdirectory layout cannot work with either. `vencord-plugin/README.md` moved to [`docs/VENCORD-PLUGIN.md`](docs/VENCORD-PLUGIN.md). The userscript keeps its path and its raw URL and is not part of the plugin build &mdash; both esbuild and the installer resolve `index.tsx` ahead of `index.js`. A CI job now clones Vencord, checks this repo out the way the installer would, builds, and asserts the plugin reached the renderer and main-process bundles with the slash command registered and no userscript leakage; it builds against Vencord's default branch weekly, so an upstream change that breaks the plugin shows up there instead of in a bug report. The quest engine itself is unchanged this release.
