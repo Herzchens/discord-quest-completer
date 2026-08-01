@@ -4,6 +4,24 @@
  * SPDX-License-Identifier: MIT
  */
 
+import type { Logger } from "@utils/Logger";
+
+import { settings } from "./settings";
+
+/**
+ * Debug output, gated by the verboseLogging setting.
+ *
+ * Vencord's Logger.debug always calls console.debug, and browsers hide that level
+ * unless the console is switched to Verbose — so the setting had nothing to switch:
+ * every debug line was emitted either way, and whether you saw it depended on a
+ * DevTools filter. With the setting on these go out at info level, where they show
+ * by default; with it off the behaviour is unchanged.
+ */
+export function debug(logger: Logger, ...args: any[]): void {
+    if (settings.store.verboseLogging) logger.info(...args);
+    else logger.debug(...args);
+}
+
 export const sleep = (ms: number): Promise<void> =>
     new Promise(r => setTimeout(r, ms));
 

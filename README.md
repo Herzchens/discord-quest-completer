@@ -2,9 +2,9 @@
 
 # Orion
 
-**Auto-complete every Discord Quest in seconds** &mdash; v4.9.7
+**Auto-complete every Discord Quest in seconds** &mdash; v4.9.11
 
-[![Version](https://img.shields.io/badge/v4.9.7-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer)
+[![Version](https://img.shields.io/badge/v4.9.11-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -198,6 +198,12 @@ Contributions are welcome &mdash; bug reports, PRs, and docs. Start with [`CONTR
 ---
 
 ## Changelog
+
+### v4.9.11
+- **Fix (plugin): `Verbose logging` did nothing at all** &mdash; the setting was defined but never read anywhere in the plugin. Vencord's `Logger.debug` always calls `console.debug`, which browsers hide unless the console is switched to Verbose, so every debug line was emitted regardless of the toggle and whether you saw it came down to a DevTools filter. Debug output now goes through one gate: with the setting on it is raised to info level, where it shows by default; with it off nothing changes from before.
+- **Fix (plugin): enabling `Try achievement bypass` mid-run left already-skipped quests skipped** &mdash; when the bypass is off the plugin logs "enable it in settings if you want it" and marks the quest skipped, in the same set used for quests that genuinely cannot be completed. Acting on that message did nothing until a full stop/start, because `activeQuests()` filters that set for the life of the run. A refusal for want of consent is now recorded separately from a real failure, and switching the setting on returns those quests to the queue for the next cycle.
+- **Concurrency sliders now say when they apply** &mdash; both are read when a cycle starts, so a change affects the next batch rather than tasks already running. Behaviour is unchanged; it just wasn't written down anywhere.
+- Adds `hooks.ts`, a dependency-free bridge that lets a settings change reach the running engine. `settings.ts` cannot import `orion.ts` directly &mdash; that closes an import cycle &mdash; and the engine clears its handlers on stop so a hook never outlives the run it belongs to.
 
 ### v4.9.7
 - **The repo installs as a Vencord userplugin now** &mdash; paste `https://github.com/nyxxbit/discord-quest-completer` into nin0's `UserpluginInstaller` and it clones, builds and self-updates from there, no manual clone or file copying ([#42](https://github.com/nyxxbit/discord-quest-completer/issues/42)). That installer does a plain `git clone` into `src/userplugins`, and Vencord's build only reads `index.ts(x)` and `native.ts` from the top level of a plugin folder, so the plugin sources had to move out of `vencord-plugin/` and up to the repo root; a subdirectory layout cannot work with either. `vencord-plugin/README.md` moved to [`docs/VENCORD-PLUGIN.md`](docs/VENCORD-PLUGIN.md). The userscript keeps its path and its raw URL and is not part of the plugin build &mdash; both esbuild and the installer resolve `index.tsx` ahead of `index.js`. A CI job now clones Vencord, checks this repo out the way the installer would, builds, and asserts the plugin reached the renderer and main-process bundles with the slash command registered and no userscript leakage; it builds against Vencord's default branch weekly, so an upstream change that breaks the plugin shows up there instead of in a bug report. The quest engine itself is unchanged this release.

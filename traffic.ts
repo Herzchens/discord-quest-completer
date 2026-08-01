@@ -15,7 +15,7 @@
 
 import { Logger } from "@utils/Logger";
 
-import { rnd, sleep } from "./util";
+import { debug, rnd, sleep } from "./util";
 
 const logger = new Logger("OrionQuests");
 
@@ -111,7 +111,7 @@ export class Traffic {
                         }, delay + retryJitter);
                     }
                 } else if (err.isClientError) {
-                    logger.debug(`[Network] HTTP ${err.status}: ${req.url}`);
+                    debug(logger, `[Network] HTTP ${err.status}: ${req.url}`);
                     req.reject(e);
                 } else {
                     logger.error(`[Network] Request to ${req.url} failed: ${err.message}`);

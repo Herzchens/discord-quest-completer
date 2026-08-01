@@ -14,6 +14,7 @@
 import { Logger } from "@utils/Logger";
 
 import type { FakeGame, Stores } from "./types";
+import { debug } from "./util";
 
 const logger = new Logger("OrionQuests");
 
@@ -44,7 +45,7 @@ export class Patcher {
             if (typeof stores.RunStore[name] === "function") this.real[name] = stores.RunStore[name];
         }
         const absent = PATCHED_METHODS.filter(n => !this.real[n]);
-        if (absent.length) logger.debug(`[Patcher] Store lacks ${absent.join(", ")} — not patching those.`);
+        if (absent.length) debug(logger, `[Patcher] Store lacks ${absent.join(", ")} — not patching those.`);
     }
 
     private toggle(on: boolean): void {
@@ -106,7 +107,7 @@ export class Patcher {
                 games: this.stores.RunStore.getRunningGames(),
             });
         } catch (e: any) {
-            logger.debug(`[Patcher] dispatch failed: ${e?.message}`);
+            debug(logger, `[Patcher] dispatch failed: ${e?.message}`);
         }
     }
 
@@ -131,7 +132,7 @@ export class Patcher {
                     : null,
             });
         } catch (e: any) {
-            logger.debug(`[Patcher] rpc dispatch failed: ${e?.message}`);
+            debug(logger, `[Patcher] rpc dispatch failed: ${e?.message}`);
         }
     }
 

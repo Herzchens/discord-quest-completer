@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes how Orion is structured internally. It is intended for contributors and the curious, not as a user guide. Last reviewed against `index.js` **v4.9.7**.
+This document describes how Orion is structured internally. It is intended for contributors and the curious, not as a user guide. Last reviewed against `index.js` **v4.9.11**.
 
 ## High-level overview
 
@@ -30,6 +30,7 @@ OrionQuest/
 ├── traffic.ts                     # FIFO request queue with backoff
 ├── patcher.ts                     # RunningGameStore monkey-patch + RPC dispatch
 ├── settings.ts                    # Vencord settings schema
+├── hooks.ts                       # settings-to-engine bridge (imports nothing, breaks the cycle)
 ├── types.ts  ├── util.ts
 │
 ├── docs/
