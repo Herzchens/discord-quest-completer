@@ -96,7 +96,7 @@ Exposed in Vencord's plugin settings UI. Persisted via Vencord's `DataStore`.
 | Hide activity | `false` | `CONFIG.HIDE_ACTIVITY` &mdash; both turn Discord's own `status.showCurrentGame` off while quests run, restoring it on stop (needs `UserSettingsAPI`, declared as a plugin dependency) |
 | Game concurrency | `1` | inferred from `runConcurrent(queues.game, 1)` |
 | Video concurrency | `2` | inferred from `runConcurrent(queues.video, 2)` |
-| Verbose logging | `false` | (debug logs) |
+| Verbose logging | `false` | (debug logs) &mdash; raises Orion's debug messages to info level so they appear without switching the console to Verbose |
 
 ---
 

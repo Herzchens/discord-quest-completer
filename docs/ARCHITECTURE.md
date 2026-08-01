@@ -30,6 +30,7 @@ OrionQuest/
 ├── traffic.ts                     # FIFO request queue with backoff
 ├── patcher.ts                     # RunningGameStore monkey-patch + RPC dispatch
 ├── settings.ts                    # Vencord settings schema
+├── hooks.ts                       # settings-to-engine bridge (imports nothing, breaks the cycle)
 ├── types.ts  ├── util.ts
 │
 ├── docs/

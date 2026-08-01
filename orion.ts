@@ -13,12 +13,13 @@ import { Logger } from "@utils/Logger";
 import { findByProps, findStore } from "@webpack";
 import { FluxDispatcher, RestAPI } from "@webpack/common";
 
+import { setAchievementBypassHook } from "./hooks";
 import { Patcher } from "./patcher";
 import { settings } from "./settings";
 import { TaskRunner } from "./tasks";
 import { isSkippableQuest, Traffic } from "./traffic";
 import type { OrionRuntime, Quest, Stores, TaskInfo, TaskType } from "./types";
-import { rnd, sleep } from "./util";
+import { debug, rnd, sleep } from "./util";
 
 const logger = new Logger("OrionQuests");
 
@@ -114,7 +115,7 @@ export function isEngineRunning(): boolean {
 }
 function emitDashboard(): void {
     for (const fn of dashboardListeners) {
-        try { fn(); } catch (e: any) { logger.debug(`[UI] listener threw: ${e?.message}`); }
+        try { fn(); } catch (e: any) { debug(logger, `[UI] listener threw: ${e?.message}`); }
     }
 }
 function setEntry(id: string, partial: Partial<DashboardEntry> & { name: string; type: TaskType; cur: number; max: number; status: string; }): void {
@@ -188,7 +189,7 @@ async function onTaskComplete(q: Quest, t: TaskInfo): Promise<void> {
                 tag: `orion-${q.id}`,
             });
         }
-    } catch (e: any) { logger.debug(`[Notification] ${e?.message}`); }
+    } catch (e: any) { debug(logger, `[Notification] ${e?.message}`); }
 
     if (settings.store.tryToClaimReward && tasks) {
         try {
@@ -356,11 +357,19 @@ export async function startOrion(): Promise<void> {
             onComplete: onTaskComplete,
         });
 
+        // Turning the achievement bypass on mid-run should reach the quests it already
+        // refused, not just the ones detected after the flip.
+        setAchievementBypassHook(enabled => {
+            if (!enabled || !tasks) return;
+            const restored = tasks.retryConsentSkipped();
+            if (restored > 0) logger.info(`[Settings] Achievement bypass enabled — retrying ${restored} skipped quest(s) on the next cycle.`);
+        });
+
         try {
             if (typeof Notification !== "undefined" && Notification.permission === "default") {
                 Notification.requestPermission();
             }
-        } catch (e: any) { logger.debug(`[Notification] permission request failed: ${e?.message}`); }
+        } catch (e: any) { debug(logger, `[Notification] permission request failed: ${e?.message}`); }
 
         await mainLoop();
     } catch (e: any) {
@@ -394,6 +403,10 @@ export function stopOrion(): void {
         if (e.status === "RUNNING" || e.status === "QUEUE") dashboard.set(id, { ...e, status: "STOPPED" });
     }
     emitDashboard();
+
+    // Drop the settings bridge with everything else it points at — a hook holding a
+    // torn-down TaskRunner is the same leak as any other module state outliving the engine.
+    setAchievementBypassHook(null);
 
     try { patcher?.clean(); } catch (e: any) { logger.error("Patcher cleanup threw:", e); }
     patcher = null;

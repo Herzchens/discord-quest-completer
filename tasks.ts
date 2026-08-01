@@ -17,7 +17,7 @@ import type { Patcher } from "./patcher";
 import { settings } from "./settings";
 import type { Traffic } from "./traffic";
 import type { DetectedTask, FakeGame, OrionRuntime, Quest, Stores, TaskInfo, TaskType } from "./types";
-import { rnd, sanitize, sleep } from "./util";
+import { debug, rnd, sanitize, sleep } from "./util";
 
 const logger = new Logger("OrionQuests");
 
@@ -41,6 +41,12 @@ export interface TaskCallbacks {
 
 export class TaskRunner {
     public skipped = new Set<string>();
+    /**
+     * Quests skipped only because the achievement bypass was switched off — a refusal
+     * to act, not a quest that can't be done. Tracked apart from `skipped` so turning
+     * the setting on can put them back in play. See retryConsentSkipped().
+     */
+    public consentSkipped = new Set<string>();
     private stores: Stores;
     private traffic: Traffic;
     private patcher: Patcher;
@@ -131,7 +137,7 @@ export class TaskRunner {
                 id: appId,
             };
         } catch (e: any) {
-            logger.debug(`[FetchGame] Fallback for ${appName}: ${e?.message ?? e}`);
+            debug(logger, `[FetchGame] Fallback for ${appName}: ${e?.message ?? e}`);
             const cleanName = sanitize(appName);
             const safeExe = `${cleanName.replace(/\s+/g, "")}.exe`;
             return {
@@ -176,7 +182,7 @@ export class TaskRunner {
             try {
                 await this.traffic.enqueue(`/quests/${q.id}/video-progress`, { timestamp: Number(cur.toFixed(6)) });
             } catch (e: any) {
-                logger.debug(`[Video] Initial ping failed: ${e?.message}`);
+                debug(logger, `[Video] Initial ping failed: ${e?.message}`);
             }
         }
 
@@ -281,8 +287,8 @@ export class TaskRunner {
                 cleaned = true;
                 clearTimeout(safetyTimer);
                 clearTimeout(watchdogTimer);
-                try { cleanupHook(); } catch (e: any) { logger.debug(`[Task] Cleanup: ${e?.message}`); }
-                try { this.stores.Dispatcher?.unsubscribe(HEARTBEAT_EVT, check); } catch (e: any) { logger.debug(`[Dispatcher] Unsubscribe failed: ${e?.message}`); }
+                try { cleanupHook(); } catch (e: any) { debug(logger, `[Task] Cleanup: ${e?.message}`); }
+                try { this.stores.Dispatcher?.unsubscribe(HEARTBEAT_EVT, check); } catch (e: any) { debug(logger, `[Dispatcher] Unsubscribe failed: ${e?.message}`); }
                 this.runtime.cleanups.delete(abort);
             };
 
@@ -360,7 +366,7 @@ export class TaskRunner {
                 failCount = 0;
                 if (cur >= t.target) {
                     try { await this.traffic.enqueue(`/quests/${q.id}/heartbeat`, { stream_key: key, terminal: true }); }
-                    catch (e: any) { logger.debug(`[ACTIVITY] Final heartbeat failed: ${e?.message}`); }
+                    catch (e: any) { debug(logger, `[ACTIVITY] Final heartbeat failed: ${e?.message}`); }
                     break;
                 }
             } catch (e: any) {
@@ -491,7 +497,7 @@ export class TaskRunner {
                     const ours = (after?.body || []).filter((tk: any) => tk.application?.id === appId && !snap.has(tk.id));
                     for (const g of ours) await this.stores.API.del({ url: `/oauth2/tokens/${g.id}` });
                 } catch (e: any) {
-                    logger.debug(`[Bypass] Deauthorize cleanup non-fatal: ${e?.message}`);
+                    debug(logger, `[Bypass] Deauthorize cleanup non-fatal: ${e?.message}`);
                 }
             }
         }
@@ -546,10 +552,31 @@ export class TaskRunner {
         const bypassed = await this.bypassAchievement(q, t);
         if (bypassed) return this.cb.onComplete(q, t);
 
-        // both auto-paths failed: skip the quest. no more 25-min passive wait.
         if (!this.runtime.running) return;
+
+        // A bypass that never ran because the consent toggle is off is not the same as one
+        // that ran and failed. Recorded separately so switching the toggle on returns the
+        // quest to the queue — otherwise it stays in `skipped` for the life of the run and
+        // the setting looks like it did nothing.
+        if (!settings.store.achievementBypass) {
+            this.consentSkipped.add(q.id);
+            return this.failTask(q, t, "Achievement bypass is off in settings");
+        }
+
+        // both auto-paths failed: skip the quest. no more 25-min passive wait.
         logger.warn(`[Task] Skipping "${t.name}" — no auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`);
         return this.failTask(q, t, "Cannot auto-complete");
+    }
+
+    /**
+     * Return quests that were skipped only for want of consent, so the next cycle picks them
+     * up again. Called when the achievement bypass is switched on while the engine runs.
+     */
+    retryConsentSkipped(): number {
+        let restored = 0;
+        for (const id of this.consentSkipped) if (this.skipped.delete(id)) restored++;
+        this.consentSkipped.clear();
+        return restored;
     }
 
     private findChannel(): string | null {
@@ -563,7 +590,7 @@ export class TaskRunner {
             }
             return null;
         } catch (e: any) {
-            logger.debug(`[Task] Channel lookup error: ${e?.message}`);
+            debug(logger, `[Task] Channel lookup error: ${e?.message}`);
             return null;
         }
     }

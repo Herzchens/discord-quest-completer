@@ -10,6 +10,8 @@
 import { definePluginSettings } from "@api/Settings";
 import { OptionType } from "@utils/types";
 
+import { fireAchievementBypassChanged } from "./hooks";
+
 export const settings = definePluginSettings({
     autoStart: {
         type: OptionType.BOOLEAN,
@@ -21,8 +23,9 @@ export const settings = definePluginSettings({
     achievementBypass: {
         type: OptionType.BOOLEAN,
         description:
-            "Auto-complete ACHIEVEMENT_IN_ACTIVITY quests by OAuth-authorizing the quest's app on your account (scopes: identify, applications.commands, applications.entitlements), reporting progress to the activity backend, then revoking the grant right after. This automates your logged-in account and can put the WHOLE account at risk under Discord's quest-automation enforcement. Off by default — turning it on is your explicit consent.",
+            "Auto-complete ACHIEVEMENT_IN_ACTIVITY quests by OAuth-authorizing the quest's app on your account (scopes: identify, applications.commands, applications.entitlements), reporting progress to the activity backend, then revoking the grant right after. This automates your logged-in account and can put the WHOLE account at risk under Discord's quest-automation enforcement. Off by default — turning it on is your explicit consent. Turning it on mid-run puts back any quest that was skipped only because it was off.",
         default: false,
+        onChange: (value: boolean) => fireAchievementBypassChanged(value),
     },
 
     tryToClaimReward: {
@@ -42,7 +45,7 @@ export const settings = definePluginSettings({
     gameConcurrency: {
         type: OptionType.SLIDER,
         description:
-            "Parallel game quests. Values above 1 risk detection — keep at 1 unless you know what you're doing.",
+            "Parallel game quests. Values above 1 risk detection — keep at 1 unless you know what you're doing. Read when a cycle starts, so a change applies to the next batch rather than to tasks already in flight.",
         markers: [1, 2, 3],
         stickToMarkers: true,
         default: 1,
@@ -51,7 +54,7 @@ export const settings = definePluginSettings({
     videoConcurrency: {
         type: OptionType.SLIDER,
         description:
-            "Parallel video quests. Higher values finish faster but make more API calls.",
+            "Parallel video quests. Higher values finish faster but make more API calls. Read when a cycle starts, so a change applies to the next batch rather than to tasks already in flight.",
         markers: [1, 2, 3, 4],
         stickToMarkers: true,
         default: 2,
@@ -67,7 +70,7 @@ export const settings = definePluginSettings({
     verboseLogging: {
         type: OptionType.BOOLEAN,
         description:
-            "Show debug-level logs in the browser console (useful for troubleshooting Discord changes).",
+            "Raise Orion's debug messages to info level so they show in the console without switching it to Verbose (useful for troubleshooting Discord changes).",
         default: false,
     },
 });
