@@ -35,7 +35,7 @@ export const settings = definePluginSettings({
     hideActivity: {
         type: OptionType.BOOLEAN,
         description:
-            "Suppress 'Playing ...' status from your friends list while game quests are running. Turns Discord's own 'Display current activity as a status message' off for the duration and restores it afterwards — the store spoof alone is what Discord builds the status from, so nothing less hides it.",
+            "Suppress 'Playing ...' status from your friends list while game quests are running. Turns Discord's own 'Display current activity as a status message' off for the duration and restores it afterwards — the store spoof alone is what Discord builds the status from, so nothing less hides it. Takes effect immediately, including on a quest already in progress.",
         default: false,
     },
 

@@ -96,10 +96,12 @@ export class Patcher {
 
     /**
      * Force status.showCurrentGame off while a fake game is up and hideActivity is on,
-     * restore it once the last one goes away. Called on every add/remove so a mid-run
-     * toggle of the setting takes effect on the next task boundary.
+     * restore it once the last one goes away. Called on every add/remove, and directly by
+     * the engine when the setting itself changes — waiting for the next add/remove meant a
+     * toggle during a game quest did nothing for up to 25 minutes, which reads as broken.
+     * Idempotent: the savedShowCurrentGame guard makes a repeat call a no-op.
      */
-    private syncPresenceSuppression(): void {
+    syncPresenceSuppression(): void {
         const shouldSuppress = this.hideActivity() && this.games.length > 0;
 
         // ShowCurrentGame is a lazy proxy, so it's always truthy — the throw only

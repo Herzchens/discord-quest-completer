@@ -8,6 +8,7 @@
  * task type, and surfaces progress through the dashboard registry.
  */
 
+import { SettingsStore } from "@api/Settings";
 import { Logger } from "@utils/Logger";
 import { findByProps, findStore } from "@webpack";
 import { FluxDispatcher, RestAPI } from "@webpack/common";
@@ -82,8 +83,22 @@ const dashboard = new Map<string, DashboardEntry>();
 const dashboardListeners = new Set<() => void>();
 let stores: Stores | null = null;
 let patcher: Patcher | null = null;
+
 let traffic: Traffic | null = null;
 let tasks: TaskRunner | null = null;
+
+/**
+ * hideActivity is read live, but nothing re-read it between task boundaries: suppression is
+ * recomputed only when a fake game is added or removed, and a game quest holds one for up to
+ * 25 minutes. Vencord notifies us the moment the user clicks instead. The handler is
+ * module-level so stopOrion can pass the same reference back to remove it.
+ *
+ * The path is resolved on use, never at module load: definePluginSettings leaves pluginName
+ * empty and Vencord fills it in when it initialises the plugin, so a path built up here would
+ * read "plugins..hideActivity" and the listener would never fire.
+ */
+const hideActivityPath = () => `plugins.${settings.pluginName}.hideActivity`;
+const onHideActivityChanged = () => patcher?.syncPresenceSuppression();
 
 /** Public read access for the React dashboard component. */
 export function subscribeDashboard(fn: () => void): () => void {
@@ -316,6 +331,7 @@ export async function startOrion(): Promise<void> {
         stores = loadStores();
         // pass a getter, not a snapshot — the setting is toggleable mid-run
         patcher = new Patcher(stores, () => !!settings.store.hideActivity);
+        SettingsStore.addChangeListener(hideActivityPath(), onHideActivityChanged);
         traffic = new Traffic(stores.API, () => RUNTIME.running);
         tasks = new TaskRunner(stores, traffic, patcher, RUNTIME, {
             onProgress: (id, info) => setEntry(id, info),
@@ -348,6 +364,10 @@ export function stopOrion(): void {
         catch (e: any) { failed++; logger.error("Cleanup function threw:", e); }
     }
     RUNTIME.cleanups.clear();
+
+    // Detach before clean(): the listener holds the patcher, and a settings change arriving
+    // after teardown would re-enter a torn-down engine.
+    SettingsStore.removeChangeListener(hideActivityPath(), onHideActivityChanged);
 
     try { patcher?.clean(); } catch (e: any) { logger.error("Patcher cleanup threw:", e); }
     patcher = null;
