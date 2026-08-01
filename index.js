@@ -200,7 +200,7 @@
     ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── */
 
     const Logger = {
-        root: null, tasks: new Map(), tickerId: null,
+        root: null, tasks: new Map(), tickerId: null, _hotkey: null,
 
         init() {
             const oldUI = document.getElementById('orion-ui'); if (oldUI) oldUI.remove();
@@ -418,6 +418,12 @@
 
                             this.updateTask(questId, { ...taskData, status: "CLAIMED", claimable: false, claimState: null });
                             setTimeout(() => this.removeTask(questId), 2000);
+                        } else {
+                            // 2xx without claimed_at — the reward isn't claimed, and without this
+                            // branch claimState stayed WAITING forever, so the button was dead for
+                            // the rest of the session with no way back.
+                            this.log(`[Claim] Reward for "${taskData.name}" wasn't confirmed. Claim it from Discord's Quests page.`, 'warn');
+                            this.updateTask(questId, { ...taskData, claimState: 'FAILED' });
                         }
                     } catch (err) {
                         this.log(`[Claim] Action required for "${taskData.name}". Check Discord UI for captcha.`, 'warn');
@@ -429,7 +435,12 @@
 
             document.getElementById('orion-close').onclick = () => this.toggle();
             document.getElementById('orion-stop').onclick = () => this.shutdown();
-            document.addEventListener('keydown', e => (e.key === '>' || (e.shiftKey && e.key === '.')) && this.toggle());
+
+            // Keep the reference so shutdown() can detach it. An anonymous listener here
+            // survived STOP and stacked one more copy per paste, each closing over a dead
+            // dashboard — the same stacking the gear handler below is careful to avoid.
+            this._hotkey = e => (e.key === '>' || (e.shiftKey && e.key === '.')) && this.toggle();
+            document.addEventListener('keydown', this._hotkey);
 
             // gear toggles the picker options panel. Those nodes only exist during the picker
             // phase, so look them up at click time and no-op otherwise. Registered once here
@@ -448,7 +459,10 @@
             this.startTicker();
         },
 
-        toggle() { this.root.style.display = this.root.style.display === 'none' ? 'flex' : 'none'; },
+        toggle() {
+            if (!this.root?.parentElement) return;  // dashboard already torn down
+            this.root.style.display = this.root.style.display === 'none' ? 'flex' : 'none';
+        },
 
         shutdown() {
             if (!RUNTIME.running) return;
@@ -456,6 +470,7 @@
             this.log("[System] Stopping script & cleaning up...", "warn");
 
             if (this.tickerId) clearInterval(this.tickerId);
+            if (this._hotkey) { document.removeEventListener('keydown', this._hotkey); this._hotkey = null; }
 
             for (const cleanupFn of RUNTIME.cleanups) {
                 try { cleanupFn(); } catch (e) { this.log(`[Cleanup] ${e.message}`, 'debug'); }
@@ -463,11 +478,21 @@
             RUNTIME.cleanups.clear();
 
             Patcher.clean();
+
+            // Free the re-entry guard now, not in a second. Holding it for the grace period
+            // meant a paste inside that window was refused with "Already running." — and the
+            // UI that guard had just re-shown was then removed by this very timer, leaving
+            // nothing on screen and no hint that pasting again would work.
+            window.orionLock = false;
+
+            // Capture the nodes to drop instead of looking them up by id when the timer fires:
+            // a new instance reuses the same ids, so a late getElementById('orion-styles')
+            // would delete the *new* dashboard's stylesheet.
+            const styles = document.getElementById('orion-styles');
+            const root = this.root;
             setTimeout(() => {
-                const styles = document.getElementById('orion-styles');
-                if (styles) styles.remove();
-                if (this.root?.parentElement) this.root.remove();
-                window.orionLock = false;
+                if (styles?.parentElement) styles.remove();
+                if (root?.parentElement) root.remove();
             }, 1000);
         },
 
@@ -518,7 +543,8 @@
             if (oldData && oldData.status === newData.status && oldData.removing === newData.removing &&
                 oldData.claimable === newData.claimable && oldData.claimState === newData.claimState &&
                 oldData.actionRequired === newData.actionRequired) {
-                const card = document.getElementById(`orion-task-${id}`);
+                // must match the escaped id render() writes, or the in-place update misses
+                const card = document.getElementById(`orion-task-${esc(id)}`);
                 if (card) {
                     const pct = this._getPct(newData);
 
@@ -603,7 +629,7 @@
                 if (t.claimable) {
                     if (t.claimState === 'WAITING') actionBtn = `<button class="claim-btn" disabled>WAITING...</button>`;
                     else if (t.claimState === 'FAILED') actionBtn = `<button class="claim-btn failed" disabled>ACTION REQUIRED</button>`;
-                    else actionBtn = `<button class="claim-btn" data-id="${id}">CLAIM REWARD</button>`;
+                    else actionBtn = `<button class="claim-btn" data-id="${esc(id)}">CLAIM REWARD</button>`;
                 } else if (t.actionRequired === 'ENROLL') {
                     statusText = 'ACTION REQUIRED'; progressLabel = 'Accept quest in Discord';
                     actionBtn = `<button class="goto-btn">GO TO QUESTS</button>`;
@@ -625,7 +651,7 @@
                 }
 
                 return `
-                <div id="orion-task-${id}" class="task-card ${stateClass} ${removingClass}">
+                <div id="orion-task-${esc(id)}" class="task-card ${stateClass} ${removingClass}">
                     <div class="task-icon" style="--p: ${pct}%">
                         <div class="task-icon-inner">${icon}</div>
                         ${stateClass === 'running' ? `<div class="task-icon-overlay">${Math.floor(pct)}%</div>` : ''}
@@ -1424,12 +1450,18 @@
         // process), DiscordNative HTTP candidates (if any exist), raw fetch.
         _relayUrl: 'http://127.0.0.1:43210',
         _relayProbe: null,
+        _relayProbeAt: 0,
+        RELAY_PROBE_TTL: 60000,   // re-probe after a minute instead of trusting one answer forever
 
         // Cache the in-flight probe promise so concurrent callers (video runs at
         // concurrency 2) all await the same result, instead of a second caller seeing
-        // a half-set flag and getting undefined (falsy) back.
+        // a half-set flag and getting undefined (falsy) back. Cached for a TTL rather than
+        // for the whole run: a permanent cache meant a relay started mid-run was never
+        // picked up, and a relay that died was still treated as available.
         _probeRelay() {
-            return this._relayProbe ??= (async () => {
+            if (this._relayProbe && Date.now() - this._relayProbeAt < this.RELAY_PROBE_TTL) return this._relayProbe;
+            this._relayProbeAt = Date.now();
+            return this._relayProbe = (async () => {
                 try {
                     const r = await Promise.race([
                         fetch(`${this._relayUrl}/health`, { method: 'GET', redirect: 'error' }),
@@ -1448,16 +1480,26 @@
             //    the relay forwards to discordsays.com from outside the browser sandbox.
             //    This is the no-mod path: standalone userscript + tiny helper.
             if (await this._probeRelay()) {
-                const r = await fetch(`${this._relayUrl}/proxy`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url, headers, body: jsonBody }),
-                    redirect: 'error'
-                });
-                if (!r.ok) throw { status: r.status, body: await r.text() };
-                const result = await r.json();
-                if (!result.ok) throw { status: result.status, body: result.body };
-                return result;
+                let r;
+                try {
+                    r = await fetch(`${this._relayUrl}/proxy`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url, headers, body: jsonBody }),
+                        redirect: 'error'
+                    });
+                } catch (e) {
+                    // relay went away between probe and POST — drop the cached answer and let
+                    // the next transport try, instead of failing the whole bypass on a dead port
+                    this._relayProbe = null;
+                    Logger.log(`[Bypass] Relay stopped responding, trying other transports: ${e?.message ?? e}`, 'debug');
+                }
+                if (r) {
+                    if (!r.ok) throw { status: r.status, body: await r.text() };
+                    const result = await r.json();
+                    if (!result.ok) throw { status: result.status, body: result.body };
+                    return result;
+                }
             }
 
             // 2) Vencord plugin native module — works if user has OrionQuests Vencord plugin
@@ -1493,10 +1535,13 @@
             //    plausible paths and use the first that's a callable function.
             const dn = window.DiscordNative;
             if (dn) {
+                // Only members that plausibly *are* an HTTP client. fileManager.fetchURL and
+                // processUtils.fetch were in this list, and neither is one: the first retrieves
+                // a URL into the file layer (a write or a save dialog, not a POST) and the second
+                // belongs to process management. Calling privileged IPC speculatively with a
+                // POST-shaped argument risks a side effect the status-shape check can't even see.
                 const probes = [
                     () => dn.http?.makeRequest,
-                    () => dn.fileManager?.fetchURL,
-                    () => dn.processUtils?.fetch,
                     () => dn.app?.makeRequest,
                 ];
                 for (const probe of probes) {
