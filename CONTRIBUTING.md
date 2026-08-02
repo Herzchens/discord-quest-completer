@@ -1,6 +1,6 @@
 # Contributing to Orion
 
-Thanks for taking the time to contribute! This project is community-maintained and educational — patches, bug reports, and suggestions are all welcome.
+Thanks for taking the time to contribute! This project is community-maintained and educational. Patches, bug reports and suggestions are all welcome.
 
 ## Before you open a PR
 
@@ -24,7 +24,7 @@ npx eslint@9 index.js
 node --check index.js
 ```
 
-Both checks run in CI on every PR — make them pass locally first.
+Both checks run in CI on every PR, so make them pass locally first.
 
 ## Testing changes
 
@@ -77,7 +77,7 @@ There is no automated test harness. Changes must be validated manually:
 1. Merge PR(s) into `main`.
 2. Confirm `CONFIG.VERSION` in `index.js` matches the new tag.
 3. Update README (badge, header, changelog) in the same or follow-up commit.
-4. `gh release create vX.Y.Z ./index.js --title "vX.Y.Z — <short summary>" --notes "..."` — always attach `index.js` as an asset.
+4. `gh release create vX.Y.Z ./index.js --title "vX.Y.Z: <short summary>" --notes "..."` always attaches `index.js` as an asset.
 
 ## Reporting issues
 

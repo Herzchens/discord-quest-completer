@@ -22,8 +22,8 @@ Read CONTRIBUTING.md first if you haven't already.
 
 <!-- How did you verify this works? -->
 
-- [ ] Ran `npx eslint@9 index.js` — no errors.
-- [ ] Ran `node --check index.js` — no syntax errors.
+- [ ] Ran `npx eslint@9 index.js`, no errors.
+- [ ] Ran `node --check index.js`, no syntax errors.
 - [ ] Pasted into Discord desktop console and verified the change behaves as expected.
 - [ ] Confirmed clean shutdown (STOP button clears all state).
 

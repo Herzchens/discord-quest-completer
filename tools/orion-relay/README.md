@@ -1,6 +1,6 @@
 # Orion Relay
 
-A tiny localhost HTTP relay that unlocks the `ACHIEVEMENT_IN_ACTIVITY` auto-bypass for the standalone userscript on Discord Desktop &mdash; **no Vencord, no BetterDiscord, no client mod required**.
+A tiny localhost HTTP relay that unlocks the `ACHIEVEMENT_IN_ACTIVITY` auto-bypass for the standalone userscript on Discord Desktop. **No Vencord, no BetterDiscord, no client mod required**.
 
 ## Why this exists
 
@@ -33,14 +33,14 @@ That's the entire trick.
 
 ### Linux / macOS (and from-source)
 
-The relay is a 100-line PowerShell script. PowerShell 7+ runs on Linux/macOS &mdash; install via your package manager, then:
+The relay is a 100-line PowerShell script. PowerShell 7+ runs on Linux/macOS, so install it via your package manager, then:
 
 ```sh
 pwsh ./orion-relay.ps1
 ```
 
 If you'd rather not install PowerShell, use the bundled Python port. It needs
-only the Python 3 standard library &mdash; no `pip install`:
+only the Python 3 standard library, so no `pip install`:
 
 ```sh
 python3 ./orion-relay.py
@@ -81,9 +81,9 @@ Response:
 
 ## Security
 
-- Listens only on `127.0.0.1` &mdash; not reachable from other machines on your network.
+- Listens only on `127.0.0.1`, so it is not reachable from other machines on your network.
 - Whitelists upstream hosts to `^[0-9]+\.discordsays\.com$`. Won't forward to arbitrary URLs.
 - No credentials are stored or logged.
-- The script source is short &mdash; read it before you run it.
+- The script source is short, so read it before you run it.
 
 That said: any process on your machine can `fetch('http://127.0.0.1:43210/proxy')` while the relay is running. The relay's host restriction limits the damage, but if you're paranoid, stop the relay between sessions.

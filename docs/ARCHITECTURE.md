@@ -8,13 +8,13 @@ Orion's core is a single-file IIFE (`index.js`) that runs inside the Discord des
 
 It holds no persisted state. The only global it sets is the in-memory `window.orionLock` re-entry guard; the entire lifecycle (paste → completion → cleanup) lives in the IIFE closure. (The Vencord plugin port persists its settings via Vencord's DataStore, but the userscript itself persists nothing.)
 
-One subsystem needs more than the renderer: the `ACHIEVEMENT_IN_ACTIVITY` bypass has to POST to `*.discordsays.com`, which Discord's renderer CSP blocks. Completing those quests on Discord Desktop therefore requires either the **localhost relay** (`tools/orion-relay/`) or the **Vencord plugin's native module** — the renderer alone cannot escape the CSP.
+One subsystem needs more than the renderer: the `ACHIEVEMENT_IN_ACTIVITY` bypass has to POST to `*.discordsays.com`, which Discord's renderer CSP blocks. Completing those quests on Discord Desktop therefore requires either the **localhost relay** (`tools/orion-relay/`) or the **Vencord plugin's native module**. The renderer alone cannot escape the CSP.
 
 ## File layout
 
 ```
 OrionQuest/
-├── index.js                       # single-file distributable — the actual userscript
+├── index.js                       # single-file distributable, the actual userscript
 ├── eslint.config.mjs              # ESLint flat config scoped to index.js
 ├── README.md                      # end-user facing docs
 ├── CONTRIBUTING.md
@@ -22,7 +22,7 @@ OrionQuest/
 │   # Vencord/Equicord userplugin port (functional, in sync). These sit at the
 │   # repo root on purpose: UserpluginInstaller clones the repo straight into
 │   # src/userplugins/, and Vencord only loads index.ts(x) + native.ts from the
-│   # top level of a plugin folder — a subdirectory is never scanned.
+│   # top level of a plugin folder. A subdirectory is never scanned.
 ├── index.tsx                      # plugin entry, /orion slash command, lifecycle
 ├── orion.ts                       # store loading, main cycle loop, dashboard registry
 ├── tasks.ts                       # per-type handlers incl. the OAuth bypass
@@ -65,7 +65,7 @@ The file is a layered IIFE; each "module" is a `const` object or function in the
 | `Logger`        | Quest picker UI, dashboard renderer, log ring-buffer                                             |
 | `Tasks`         | Per-task-type handlers + `_bypassPost` transport picker + `bypassAchievement`                    |
 | `loadModules()` | Dual-path module extraction (Vencord API + native fallback)                                      |
-| `main()`        | Entry point — discovers stores, renders picker, runs the task pipeline                           |
+| `main()`        | Entry point. Discovers stores, renders picker, runs the task pipeline                           |
 
 ## Runtime sequence
 
@@ -79,8 +79,8 @@ paste into console → IIFE + orionLock guard → loadModules() (Mods = {...})
 
 Discord ships its stores in minified webpack bundles whose exported paths (`e.Z`, `e.A`, `e.ZP`, …) change every build, so hardcoded paths rot within days. Since v4.6, `loadModules()` uses a dual path:
 
-1. **Vencord integration** — if `window.Vencord.Webpack` is present, request stores/props via Vencord's injected API. Bypasses recent Discord Stable runtime limitations entirely.
-2. **Native fallback** — for vanilla Canary/PTB, push a fake chunk to `webpackChunkdiscord_app` to capture the module registry, guard against Sentry's secondary runtime by picking the `__webpack_require__` with the largest cache, then match stores by `constructor.displayName` (e.g. `"QuestStore"`), not by minified key.
+1. **Vencord integration.** If `window.Vencord.Webpack` is present, request stores/props via Vencord's injected API. Bypasses recent Discord Stable runtime limitations entirely.
+2. **Native fallback.** For vanilla Canary/PTB, push a fake chunk to `webpackChunkdiscord_app` to capture the module registry, guard against Sentry's secondary runtime by picking the `__webpack_require__` with the largest cache, then match stores by `constructor.displayName` (e.g. `"QuestStore"`), not by minified key.
 
 Vanilla Discord **Stable** no longer exposes the live cache post-boot, so Stable users need Vencord (issue #20).
 
@@ -100,7 +100,7 @@ Vanilla Discord **Stable** no longer exposes the live cache post-boot, so Stable
 
 This matters because the failure is silent. Reading only the legacy field yields `0`/`null`, which produced a fake process Discord could never match to the quest (no heartbeat, quest frozen at 0%) and made the achievement bypass return early without attempting anything ([#43](https://github.com/nyxxbit/discord-quest-completer/issues/43)). Game/stream quests with no resolvable id are now skipped loudly instead of run, and a game/stream task that gets no heartbeat within 90s of the last one aborts with a reason rather than idling until the 25-minute timeout.
 
-`ACHIEVEMENT_IN_ACTIVITY` is validated by the activity backend (`discordsays.com`), not the client, so there is no client heartbeat to forge — Discord rejects those with 403. The bypass instead authorizes against that backend and reports progress to it directly. Quests for age-gated or delisted activities still can't be done: `/proxy-tickets` returns HTTP 403 code `50165` and the activity won't launch even manually, so they're skipped.
+`ACHIEVEMENT_IN_ACTIVITY` is validated by the activity backend (`discordsays.com`), not the client, so there is no client heartbeat to forge, and Discord rejects those with 403. The bypass instead authorizes against that backend and reports progress to it directly. Quests for age-gated or delisted activities still can't be done: `/proxy-tickets` returns HTTP 403 code `50165` and the activity won't launch even manually, so they're skipped.
 
 ## ACHIEVEMENT bypass (OAuth → discordsays)
 
@@ -124,18 +124,18 @@ Steps 4-5 hit `*.discordsays.com`, which the renderer CSP forbids. `Tasks._bypas
 
 1. **Localhost relay** on `127.0.0.1:43210` (CSP allows `connect-src http://127.0.0.1:*`). No client mod.
 2. **Vencord native module** via `VencordNative.pluginHelpers.OrionQuests` (main-process fetch).
-3. **DiscordNative HTTP probes** — best-effort, in case a future build exposes a generic HTTP method.
-4. **Direct fetch** — works on web Discord (no CSP), blocked on Desktop.
+3. **DiscordNative HTTP probes.** Best-effort, in case a future build exposes a generic HTTP method.
+4. **Direct fetch.** Works on web Discord (no CSP), blocked on Desktop.
 
 The Vencord port skips the picker and calls its native module directly. Every transport uses `redirect: "error"` so a 3xx from discordsays can't bounce the auth token / proxy-ticket referrer to another host.
 
 ## Localhost relay (`tools/orion-relay/`)
 
-A ~170-line PowerShell HTTP listener that exists purely to escape the renderer CSP: the userscript can reach `127.0.0.1` but not `discordsays.com`, and the relay (outside the browser sandbox) can reach `discordsays.com`. Endpoints: `GET /health` (relay detection) and `POST /proxy` (forward to discordsays). Hardening: scheme pinned `https`, host pinned to `^[0-9]+\.discordsays\.com$`, path pinned to the two `.proxy/acf/*` endpoints, no redirect following, CORS reflected only to Discord origins, a strict request-header allowlist, an inbound `Host` check, and a body-size cap. Residual: while running, any local process can still drive forged progress through it — but only to those two endpoints, and a caller without a valid OAuth code/DS token gets rejected by discordsays anyway.
+A ~170-line PowerShell HTTP listener that exists purely to escape the renderer CSP: the userscript can reach `127.0.0.1` but not `discordsays.com`, and the relay (outside the browser sandbox) can reach `discordsays.com`. Endpoints: `GET /health` (relay detection) and `POST /proxy` (forward to discordsays). Hardening: scheme pinned `https`, host pinned to `^[0-9]+\.discordsays\.com$`, path pinned to the two `.proxy/acf/*` endpoints, no redirect following, CORS reflected only to Discord origins, a strict request-header allowlist, an inbound `Host` check, and a body-size cap. Residual: while running, any local process can still drive forged progress through it, but only to those two endpoints, and a caller without a valid OAuth code/DS token gets rejected by discordsays anyway.
 
 ## Vencord native module (`native.ts`)
 
-A main-process IPC bridge that performs the CSP-exempt discordsays POSTs for the plugin (and, when installed, for the userscript via `pluginHelpers`). This is a trust boundary: it runs privileged and CSP-free, so it validates every renderer-supplied value that shapes the request — `appId` and `questId` must be numeric and the `Referer` must be `https` pointing exactly at `{appId}.discordsays.com` — and uses `redirect: "error"`.
+A main-process IPC bridge that performs the CSP-exempt discordsays POSTs for the plugin (and, when installed, for the userscript via `pluginHelpers`). This is a trust boundary. It runs privileged and CSP-free, so it validates every renderer-supplied value that shapes the request: `appId` and `questId` must be numeric and the `Referer` must be `https` pointing exactly at `{appId}.discordsays.com`. It also uses `redirect: "error"`.
 
 ## Traffic layer
 
@@ -175,7 +175,7 @@ A functional port, in sync with the userscript. It replaces manual webpack walki
 
 ### Why the plugin sources live at the repo root
 
-Vencord's build enumerates only the direct children of `src/userplugins` (`globPlugins` / `globNativesPlugin` in `scripts/build/build.mjs` + `scripts/build/common.mjs`): the plugin entry must be `index.ts`/`index.tsx` at the top level of the plugin folder, and native IPC must be `native.ts` (or `native/index.ts`) beside it. Nested subdirectories are never scanned. nin0's `UserpluginInstaller` runs a plain `git clone <repo>` into `src/userplugins`, so the clone root *is* the plugin folder — which means the plugin has to be the repo root for one-click install and in-app updates (`git fetch` + `git rebase origin/HEAD`) to work.
+Vencord's build enumerates only the direct children of `src/userplugins` (`globPlugins` / `globNativesPlugin` in `scripts/build/build.mjs` + `scripts/build/common.mjs`): the plugin entry must be `index.ts`/`index.tsx` at the top level of the plugin folder, and native IPC must be `native.ts` (or `native/index.ts`) beside it. Nested subdirectories are never scanned. nin0's `UserpluginInstaller` runs a plain `git clone <repo>` into `src/userplugins`, so the clone root *is* the plugin folder, which means the plugin has to be the repo root for one-click install and in-app updates (`git fetch` + `git rebase origin/HEAD`) to work.
 
 The userscript's `index.js` stays at the root next to `index.tsx`. Both resolvers prefer the `.tsx`:
 
