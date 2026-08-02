@@ -273,10 +273,27 @@ async function mainLoop(): Promise<void> {
                     // skip if already running
                     if (dashboard.get(q.id)?.status === "RUNNING") continue;
 
-                    setEntry(t.id, { name: t.name, type: t.type, cur: 0, max: t.target, status: "QUEUE" });
+                    // Auto-enroll off means the user picks the quests: leave anything they
+                    // haven't accepted untouched and park it instead of queuing it. activeQuests
+                    // keeps unenrolled quests in the list, so the next cycle re-checks and queues
+                    // this one the moment they accept it in Discord, without a restart.
+                    if (!q.userStatus?.enrolledAt && !settings.store.autoEnroll) {
+                        // announce the wait once, not on every rescan
+                        if (dashboard.get(q.id)?.status !== "PENDING") {
+                            logger.info(`[Enroll] Auto-enroll is off, waiting for you to accept "${t.name}" in Discord.`);
+                        }
+                        setEntry(t.id, { name: t.name, type: t.type, cur: 0, max: t.target, status: "PENDING", actionRequired: "ENROLL" });
+                        continue;
+                    }
+
+                    // actionRequired is sticky across updates, so clear it explicitly: a quest
+                    // parked on the last cycle and accepted since would otherwise keep telling
+                    // the UI to ask for something the user already did.
+                    setEntry(t.id, { name: t.name, type: t.type, cur: 0, max: t.target, status: "QUEUE", actionRequired: null });
 
                     const taskFn = async () => {
-                        // JIT enrollment
+                        // JIT enrollment, only reached with auto-enroll on (the gate above
+                        // returns first otherwise) or when the user enrolled themselves
                         if (!q.userStatus?.enrolledAt) {
                             logger.info(`[Enroll] Accepting quest: ${t.name}`);
                             try {
