@@ -40,8 +40,9 @@ $Version = $m.Groups[1].Value
 Info "Version from index.js: $Version"
 
 $checks = @(
+    # The README carries the version in its badge only. It used to repeat it in the headline
+    # too, until that line went with the rewrite that pulled the marketing voice out.
     @{ File = 'README.md';                              Pattern = "badge/$Version-5865F2" }
-    @{ File = 'README.md';                              Pattern = "in seconds\*\* &mdash; $Version" }
     @{ File = 'docs/VENCORD-PLUGIN.md';                 Pattern = "in sync with userscript $Version" }
     @{ File = 'docs/ARCHITECTURE.md';                   Pattern = "Last reviewed against .index\.js. \*\*$Version\*\*" }
     @{ File = 'tools/orion-devbuild-installer/README.txt'; Pattern = "Version: $Version" }
