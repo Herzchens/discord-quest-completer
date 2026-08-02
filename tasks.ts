@@ -17,7 +17,7 @@ import type { Patcher } from "./patcher";
 import { settings } from "./settings";
 import type { Traffic } from "./traffic";
 import type { DetectedTask, FakeGame, OrionRuntime, Quest, Stores, TaskInfo, TaskType } from "./types";
-import { debug, rnd, sanitize, sleep } from "./util";
+import { debug, rnd, sanitize, sleep, trafficMetadataSealed } from "./util";
 
 const logger = new Logger("OrionQuests");
 
@@ -149,13 +149,24 @@ export class TaskRunner {
         }
     }
 
+    /**
+     * Claim a completed quest's reward.
+     *
+     * Body shaped after Discord's own claim action, which sends
+     * `{platform, location, is_targeted, metadata_sealed, traffic_metadata_sealed}` and
+     * nothing else. Two differences used to be visible on every claim: Orion added
+     * `metadata_raw` and `traffic_metadata_raw`, which Discord never sends, and it nulled
+     * `traffic_metadata_sealed` even though the value is sitting on the quest record.
+     */
     async claimReward(questId: string): Promise<any> {
         return this.stores.API.post({
             url: `/quests/${questId}/claim-reward`,
             body: {
-                platform: 0, location: 11, is_targeted: false,
-                metadata_raw: null, metadata_sealed: null,
-                traffic_metadata_raw: null, traffic_metadata_sealed: null,
+                platform: 0,
+                location: 11,
+                is_targeted: false,
+                metadata_sealed: null,
+                traffic_metadata_sealed: trafficMetadataSealed(this.stores.QuestStore, questId),
             },
         });
     }
@@ -347,22 +358,31 @@ export class TaskRunner {
 
     /** ACTIVITY: heartbeat against a voice channel to simulate participation. */
     async ACTIVITY(q: Quest, t: TaskInfo): Promise<void> {
-        const chan = this.findChannel();
-        if (!chan) return this.failTask(q, t, "No voice channel found");
-        const key = `call:${chan}:${rnd(1000, 9999)}`;
+        const key = this.streamKey();
+        if (!key) return this.failTask(q, t, "No voice channel found");
+        // Discord's own heartbeat always carries application_id. Sending only stream_key and
+        // terminal made every Orion beat structurally different from a real one.
+        const beat = { stream_key: key, application_id: String(t.appId || ""), terminal: false };
         let cur = 0;
         let failCount = 0;
+        let stalledBeats = 0;
         this.cb.onProgress(q.id, { name: t.name, type: "ACTIVITY", cur, max: t.target, status: "RUNNING" });
         const startTime = Date.now();
 
         while (cur < t.target && this.runtime.running) {
             try {
-                const r: any = await this.traffic.enqueue(`/quests/${q.id}/heartbeat`, { stream_key: key, terminal: false });
-                cur = r?.body?.progress?.[t.keyName]?.value ?? r?.body?.progress?.PLAY_ACTIVITY?.value ?? cur + 20;
+                const r: any = await this.traffic.enqueue(`/quests/${q.id}/heartbeat`, beat);
+                const reported = r?.body?.progress?.[t.keyName]?.value ?? r?.body?.progress?.PLAY_ACTIVITY?.value;
+                // Never invent progress. This used to fall back to `cur + 20`, so a server that
+                // credited nothing still walked the counter to target and the quest was reported
+                // complete on the strength of numbers Orion made up. Count the silent beats and
+                // give up instead.
+                if (typeof reported === "number") { cur = reported; stalledBeats = 0; }
+                else if (++stalledBeats >= MAX_TASK_FAILURES) return this.failTask(q, t, "Discord credited no progress");
                 this.cb.onProgress(q.id, { name: t.name, type: "ACTIVITY", cur, max: t.target, status: "RUNNING" });
                 failCount = 0;
                 if (cur >= t.target) {
-                    try { await this.traffic.enqueue(`/quests/${q.id}/heartbeat`, { stream_key: key, terminal: true }); }
+                    try { await this.traffic.enqueue(`/quests/${q.id}/heartbeat`, { ...beat, terminal: true }); }
                     catch (e: any) { debug(logger, `[ACTIVITY] Final heartbeat failed: ${e?.message}`); }
                     break;
                 }
@@ -509,21 +529,21 @@ export class TaskRunner {
     async ACHIEVEMENT(q: Quest, t: TaskInfo): Promise<void> {
         this.cb.onProgress(q.id, { name: t.name, type: "ACHIEVEMENT", cur: 0, max: t.target, status: "RUNNING" });
 
-        const chan = this.findChannel();
-        if (chan) {
-            const key = `call:${chan}:${rnd(1000, 9999)}`;
+        const key = this.streamKey();
+        if (key) {
+            const beat = { stream_key: key, application_id: String(t.appId || ""), terminal: false };
             let cur = 0;
             let failCount = 0;
             logger.info(`[Task] Attempting heartbeat spoofing for "${t.name}"...`);
 
             while (cur < t.target && this.runtime.running) {
                 try {
-                    const r: any = await this.traffic.enqueue(`/quests/${q.id}/heartbeat`, { stream_key: key, terminal: false });
+                    const r: any = await this.traffic.enqueue(`/quests/${q.id}/heartbeat`, beat);
                     cur = r?.body?.progress?.[t.keyName]?.value ?? r?.body?.progress?.ACHIEVEMENT_IN_ACTIVITY?.value ?? cur;
                     this.cb.onProgress(q.id, { name: t.name, type: "ACHIEVEMENT", cur, max: t.target, status: "RUNNING" });
                     failCount = 0;
                     if (cur >= t.target) {
-                        try { await this.traffic.enqueue(`/quests/${q.id}/heartbeat`, { stream_key: key, terminal: true }); }
+                        try { await this.traffic.enqueue(`/quests/${q.id}/heartbeat`, { ...beat, terminal: true }); }
                         catch { /* noop */ }
                         break;
                     }
@@ -576,18 +596,38 @@ export class TaskRunner {
         return restored;
     }
 
-    private findChannel(): string | null {
+    /**
+     * Build a stream key in the shape Discord's own encoder produces.
+     *
+     * Discord joins the parts with a colon and the trailing component is the stream owner:
+     *   call:<channelId>:<ownerId>
+     *   guild:<guildId>:<channelId>:<ownerId>
+     * and its decoder destructures them back in exactly that order.
+     *
+     * Two things used to be wrong here. The owner slot carried `rnd(1000, 9999)`, so every
+     * heartbeat body advertised a four digit number where a user snowflake belongs, and a
+     * guild voice channel was still encoded with the `call:` prefix, which decodes as a DM
+     * channel id. Both are visible in the request body on every beat.
+     */
+    private streamKey(): string | null {
         try {
+            const ownerId = this.stores.UserStore?.getCurrentUser?.()?.id;
+            if (!ownerId) return null;
+
             const dmChan = this.stores.ChanStore?.getSortedPrivateChannels()?.[0]?.id;
-            if (dmChan) return dmChan;
+            if (dmChan) return `call:${dmChan}:${ownerId}`;
+
             const guilds = this.stores.GuildChanStore?.getAllGuilds() ?? {};
             for (const g of Object.values<any>(guilds)) {
-                const voiceChan = g?.VOCAL?.[0]?.channel?.id;
-                if (voiceChan) return voiceChan;
+                const voiceChan = g?.VOCAL?.[0]?.channel;
+                if (voiceChan?.id) {
+                    const guildId = voiceChan.guild_id ?? g?.id;
+                    if (guildId) return `guild:${guildId}:${voiceChan.id}:${ownerId}`;
+                }
             }
             return null;
         } catch (e: any) {
-            debug(logger, `[Task] Channel lookup error: ${e?.message}`);
+            debug(logger, `[Task] Stream key lookup error: ${e?.message}`);
             return null;
         }
     }

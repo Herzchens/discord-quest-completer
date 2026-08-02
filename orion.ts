@@ -19,7 +19,7 @@ import { settings } from "./settings";
 import { TaskRunner } from "./tasks";
 import { isSkippableQuest, Traffic } from "./traffic";
 import type { OrionRuntime, Quest, Stores, TaskInfo, TaskType } from "./types";
-import { debug, rnd, sleep } from "./util";
+import { debug, rnd, sleep, trafficMetadataSealed } from "./util";
 
 const logger = new Logger("OrionQuests");
 
@@ -159,6 +159,7 @@ function loadStores(): Stores {
     const StreamStore = findStore("ApplicationStreamingStore");
     const ChanStore = findStore("ChannelStore");
     const GuildChanStore = findStore("GuildChannelStore");
+    const UserStore = findStore("UserStore");
     const Dispatcher = (FluxDispatcher as any) || findByProps("dispatch", "subscribe", "flushWaitQueue");
     const API = (RestAPI as any) || findByProps("get", "post", "del");
 
@@ -170,8 +171,28 @@ function loadStores(): Stores {
     if (!StreamStore) logger.warn("StreamStore not found, STREAM quests will be limited");
     if (!ChanStore) logger.warn("ChannelStore not found, ACTIVITY quests may not find a channel");
     if (!GuildChanStore) logger.warn("GuildChannelStore not found, ACTIVITY guild fallback unavailable");
+    if (!UserStore) logger.warn("UserStore not found, STREAM and ACTIVITY quests cannot build a stream key");
 
-    return { QuestStore, RunStore, StreamStore, ChanStore, GuildChanStore, Dispatcher, API };
+    return { QuestStore, RunStore, StreamStore, ChanStore, GuildChanStore, UserStore, Dispatcher, API };
+}
+
+/**
+ * When Discord has blocked quest enrollment for this account, as a Date, otherwise null.
+ *
+ * `QuestStore.questEnrollmentBlockedUntil` is populated from the same `/quests/@me` response
+ * the client already fetches, so reading it costs nothing and adds no request. A block is the
+ * clearest signal Discord gives that it has taken an interest in the account, and running on
+ * through it is both futile and the worst thing to do about it.
+ */
+function enrollmentBlockedUntil(): Date | null {
+    try {
+        const raw = stores?.QuestStore?.questEnrollmentBlockedUntil;
+        if (!raw) return null;
+        const when = raw instanceof Date ? raw : new Date(raw);
+        return isNaN(when.getTime()) || when.getTime() <= Date.now() ? null : when;
+    } catch {
+        return null;
+    }
 }
 
 function getQuestsArray(questStore: any): Quest[] {
@@ -239,6 +260,17 @@ async function mainLoop(): Promise<void> {
     while (RUNTIME.running) {
         try {
             logger.info(`[Cycle] Starting loop #${loopCount}...`);
+
+            // Discord tells the client when the account may not enroll in anything, and the
+            // quest list carries the timestamp. Checked every cycle rather than once at start,
+            // because the block can land mid-run, and continuing past it means hammering an
+            // endpoint that is already refusing us.
+            const blockedUntil = enrollmentBlockedUntil();
+            if (blockedUntil) {
+                logger.error(`[System] Discord has blocked quest enrollment on this account until ${blockedUntil.toLocaleString()}. Stopping instead of retrying.`);
+                break;
+            }
+
             const all = getQuestsArray(stores!.QuestStore);
             const active = tasks!.activeQuests(all);
 
@@ -316,7 +348,12 @@ async function mainLoop(): Promise<void> {
                         if (!q.userStatus?.enrolledAt) {
                             logger.info(`[Enroll] Accepting quest: ${t.name}`);
                             try {
-                                await traffic!.enqueue(`/quests/${q.id}/enroll`, { location: 11, is_targeted: false });
+                                await traffic!.enqueue(`/quests/${q.id}/enroll`, {
+                                    location: 11,
+                                    is_targeted: false,
+                                    metadata_sealed: null,
+                                    traffic_metadata_sealed: trafficMetadataSealed(stores!.QuestStore, q.id),
+                                });
                                 await sleep(rnd(800, 1500));
                             } catch (e: any) {
                                 // one definition of "this quest is gone", owned by traffic.ts

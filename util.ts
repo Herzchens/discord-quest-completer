@@ -32,6 +32,26 @@ export function sanitize(name: string): string {
     return name.replace(/[^a-zA-Z0-9 ]/g, "").trim().replace(/\s+/g, " ");
 }
 
+/**
+ * The server-sealed attribution blob Discord echoes back when enrolling in or claiming a
+ * quest, read off the quest record the same way Discord's own helper does.
+ *
+ * The server issues it per quest and hands it to the client in the quest list, and the
+ * client returns it unmodified. Orion sent neither field, so every enrollment and every
+ * claim it made was missing something present on every request the real client sends.
+ * Nothing here is forged: this is the server's own value going back where it came from.
+ *
+ * Returns null when the quest is unknown or predates the field, which is also what
+ * Discord sends in that case.
+ */
+export function trafficMetadataSealed(questStore: any, questId: string): string | null {
+    try {
+        return questStore?.getQuest?.(questId)?.trafficMetadataSealed ?? null;
+    } catch {
+        return null;
+    }
+}
+
 // Discord's quest reward type → human label
 export const REWARD_LABELS: Record<number, string> = {
     1: "In-Game Item",

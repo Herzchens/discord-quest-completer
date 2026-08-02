@@ -1,6 +1,6 @@
 # Orion
 
-[![Version](https://img.shields.io/badge/v4.9.9-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
+[![Version](https://img.shields.io/badge/v4.10.0-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -139,6 +139,17 @@ Bug reports, PRs and docs all welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has 
 ---
 
 ## Changelog
+
+### v4.10.0
+This release came out of reading what Discord's own client puts on the wire and diffing it against what Orion sends. Every item below was captured at the network layer on a live client, and the real-client side of each comparison came from a genuine game running on the same machine, not from reasoning about the code.
+
+- **Orion's enrollments and claims were missing a field every real one carries.** Discord's quest list ships a server-sealed attribution blob per fetch, and the client hands it straight back on `/enroll` and `/claim-reward` as `traffic_metadata_sealed`. Orion sent neither sealed field, so every enrollment and every claim it ever made was distinguishable from a real one by a field that was sitting unused on the quest record the whole time. Both requests now carry it. Nothing is forged here: it is the server's own value going back where it came from, which is exactly what the real client does. The claim body also stopped sending `metadata_raw` and `traffic_metadata_raw`, two fields Discord never sends, so extra keys were identifying it just as much as the missing ones. Both bodies now match the real client's key set exactly.
+- **The stream key advertised a four digit number where a user id belongs.** Discord builds these as `call:<channelId>:<ownerId>` or `guild:<guildId>:<channelId>:<ownerId>`, and its own decoder reads the trailing component back as the stream owner. Orion built `call:<channelId>:<rnd(1000, 9999)>`, so every `ACTIVITY` and `ACHIEVEMENT` heartbeat carried a four digit owner, and a guild voice channel was sent under the `call:` prefix, which decodes as a DM channel id. Fixed in both engines: real snowflake, correct prefix for the channel type.
+- **Those same heartbeats were missing `application_id`.** Discord's heartbeat always sends it. Orion sent only `stream_key` and `terminal`.
+- **Orion now stops when Discord has blocked enrollment on the account.** The quest list carries `quest_enrollment_blocked_until` and Orion never read it, so a blocked account kept requesting against an endpoint already refusing it, which is the worst available response to being flagged. Checked at the top of every cycle, since the block can land mid-run. Costs no extra request: the value is on the store the client already populates.
+- **`ACTIVITY` no longer invents progress.** When the heartbeat reply carried no progress the loop fell back to `cur + 20`, so a server crediting nothing still walked the counter to target and the quest was reported complete on the strength of numbers Orion made up. It now only advances on a number Discord actually returned, and gives up after five silent beats.
+
+One thing found in the same pass is **not** fixed, because it cannot be. A real game's heartbeat carries `executable_fingerprint`, a native attestation of the running binary; a spoofed game has no process to attest and the field is simply absent. Its `executable_path` differs in shape too. Discord accepted and credited both kinds of heartbeat during testing, so this is not enforced at request time today, but `PLAY_ON_DESKTOP` and `STREAM_ON_DESKTOP` spoofing is distinguishable from real play at the request level and no amount of client-side work changes that.
 
 ### v4.9.9
 - **Video polling goes back to Discord's own cadence.** v4.8 halved the interval to 3.5-4.75s and the changelog claimed that cut each video quest's wall clock in half. It did not. Progress advances by real elapsed time, so a quest takes `target` seconds either way and the shorter interval only doubled the number of requests. Measured on a live 68 second quest before the revert: 73 seconds of wall clock across 18 requests. Back to 7-9.5s, which is what a real player sends and roughly half the traffic for the same result. The synthetic first ping went with it: it fired 200-350ms in with a timestamp of 0.200-0.250, so every video quest from every user opened with a value inside the same 50ms window, which is a pattern rather than a player. Measured after, on a quest still at zero server-side progress, which is the only state that ping ever fired in: the first request leaves 9.38s in carrying a timestamp of 7.729948, and a 25 second quest finished in four requests.

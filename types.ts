@@ -56,6 +56,8 @@ export interface Stores {
     StreamStore: any;
     ChanStore: any;
     GuildChanStore: any;
+    /** Needed for the owner component of a stream key, which is the current user's id. */
+    UserStore: any;
     Dispatcher: any;
     API: any;
 }

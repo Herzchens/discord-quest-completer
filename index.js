@@ -5,7 +5,7 @@
 
     const CONFIG = {
         NAME: "Orion",
-        VERSION: "v4.9.9",
+        VERSION: "v4.10.0",
         THEME: "#5865F2",             // discord blurple
         SUCCESS: "#3BA55C",
         WARN: "#faa61a",
@@ -168,6 +168,55 @@
     // `NaN > now` is always false, which would silently drop the quest with no log. Treat an
     // unparseable expiry as "not expired" so we attempt the quest instead of hiding it.
     const notExpired = q => { const e = new Date(q.config?.expiresAt ?? 0).getTime(); return Number.isNaN(e) || e > Date.now(); };
+
+    // The server-sealed attribution blob Discord echoes back when enrolling in or claiming a
+    // quest. The server issues it per quest and ships it with the quest list; the client
+    // returns it unmodified. Orion sent neither sealed field, so every enrollment and claim it
+    // made lacked something present on every request the real client sends. Nothing is forged
+    // here: this is the server's own value going back where it came from.
+    const sealedFor = questId => {
+        try { return Mods.QuestStore?.getQuest?.(questId)?.trafficMetadataSealed ?? null; }
+        catch (_) { return null; }
+    };
+
+    // When Discord has blocked quest enrollment for this account, as a Date, otherwise null.
+    // `QuestStore.questEnrollmentBlockedUntil` comes from the same `/quests/@me` response the
+    // client already fetches, so reading it costs nothing and adds no request. A block is the
+    // clearest signal Discord gives that it has taken an interest in the account, and carrying
+    // on through it is both futile and the worst available response to it.
+    const enrollmentBlockedUntil = () => {
+        try {
+            const raw = Mods.QuestStore?.questEnrollmentBlockedUntil;
+            if (!raw) return null;
+            const when = raw instanceof Date ? raw : new Date(raw);
+            return Number.isNaN(when.getTime()) || when.getTime() <= Date.now() ? null : when;
+        } catch (_) { return null; }
+    };
+
+    // Discord joins stream key parts with a colon and the trailing component is the stream
+    // owner: `call:<channelId>:<ownerId>` for a DM, `guild:<guildId>:<channelId>:<ownerId>`
+    // for a guild voice channel, and its decoder reads them back in that order. This used to
+    // build `call:<channelId>:<rnd(1000,9999)>`, which put a four digit number where a user
+    // snowflake belongs and used the DM prefix even for a guild channel.
+    const buildStreamKey = () => {
+        try {
+            const ownerId = Mods.UserStore?.getCurrentUser?.()?.id;
+            if (!ownerId) return null;
+
+            const dm = Mods.ChanStore?.getSortedPrivateChannels()?.[0]?.id;
+            if (dm) return `call:${dm}:${ownerId}`;
+
+            for (const g of Object.values(Mods.GuildChanStore?.getAllGuilds() ?? {})) {
+                const vc = g?.VOCAL?.[0]?.channel;
+                const guildId = vc?.guild_id ?? g?.id;
+                if (vc?.id && guildId) return `guild:${guildId}:${vc.id}:${ownerId}`;
+            }
+            return null;
+        } catch (e) {
+            Logger.log(`[Task] Stream key lookup error: ${e.message}`, 'debug');
+            return null;
+        }
+    };
 
     /* ── error classification ─────────────────────────────────── */
     // Traffic uses this to decide: retry, skip, or propagate.
@@ -1228,7 +1277,11 @@
         async claimReward(questId) {
             return await Mods.API.post({
                 url: `/quests/${questId}/claim-reward`,
-                body: { platform: 0, location: 11, is_targeted: false, metadata_raw: null, metadata_sealed: null, traffic_metadata_raw: null, traffic_metadata_sealed: null }
+                // Shaped after Discord's own claim action, which sends platform, location,
+                // is_targeted and the two sealed fields, and nothing else. Orion used to add
+                // metadata_raw and traffic_metadata_raw, which Discord never sends, while
+                // nulling the sealed value that is sitting on the quest record.
+                body: { platform: 0, location: 11, is_targeted: false, metadata_sealed: null, traffic_metadata_sealed: sealedFor(questId) }
             });
         },
 
@@ -1707,27 +1760,25 @@
             Logger.updateTask(q.id, { name: t.name, type: "ACHIEVEMENT", cur: 0, max: t.target, status: "RUNNING" });
 
             // attempt active heartbeat spoofing
-            let chan = null;
-            try {
-                chan = Mods.ChanStore?.getSortedPrivateChannels()?.[0]?.id
-                    ?? Object.values(Mods.GuildChanStore?.getAllGuilds() ?? {}).find(g => g?.VOCAL?.length)?.VOCAL?.[0]?.channel?.id;
-            } catch (e) { Logger.log(`[Achievement] Channel lookup: ${e.message}`, 'debug'); }
+            const key = buildStreamKey();
 
-            if (chan) {
+            if (key) {
                 Logger.log(`[Task] Attempting heartbeat spoofing for "${t.name}"...`, 'info');
-                const key = `call:${chan}:${rnd(1000, 9999)}`;
+                // Discord's own heartbeat always carries application_id. Sending only
+                // stream_key and terminal made every Orion beat structurally different.
+                const beat = { stream_key: key, application_id: String(t.appId || ''), terminal: false };
                 let cur = 0;
                 let failCount = 0;
 
                 while (cur < t.target && RUNTIME.running) {
                     try {
-                        const r = await Traffic.enqueue(`/quests/${q.id}/heartbeat`, { stream_key: key, terminal: false });
+                        const r = await Traffic.enqueue(`/quests/${q.id}/heartbeat`, beat);
                         cur = r?.body?.progress?.[t.keyName]?.value ?? r?.body?.progress?.ACHIEVEMENT_IN_ACTIVITY?.value ?? cur;
                         Logger.updateTask(q.id, { name: t.name, type: "ACHIEVEMENT", cur, max: t.target, status: "RUNNING" });
                         failCount = 0;
 
                         if (cur >= t.target) {
-                            try { await Traffic.enqueue(`/quests/${q.id}/heartbeat`, { stream_key: key, terminal: true }); }
+                            try { await Traffic.enqueue(`/quests/${q.id}/heartbeat`, { ...beat, terminal: true }); }
                             catch (_) { }
                             break;
                         }
@@ -1762,33 +1813,35 @@
 
         // heartbeat loop against a voice channel to simulate activity participation
         async ACTIVITY(q, t) {
-            let chan = null;
-            try {
-                chan = Mods.ChanStore?.getSortedPrivateChannels()?.[0]?.id
-                    ?? Object.values(Mods.GuildChanStore?.getAllGuilds() ?? {}).find(g => g?.VOCAL?.length)?.VOCAL?.[0]?.channel?.id;
-            } catch (e) {
-                Logger.log(`[Task] ACTIVITY channel lookup error: ${e.message}`, 'debug');
-            }
-
-            if (!chan) {
+            const key = buildStreamKey();
+            if (!key) {
                 return Tasks.failTask(q, t, 'No voice channel found');
             }
 
-            const key = `call:${chan}:${rnd(1000, 9999)}`;
+            // Discord's own heartbeat always carries application_id. Sending only stream_key
+            // and terminal made every Orion beat structurally different from a real one.
+            const beat = { stream_key: key, application_id: String(t.appId || ''), terminal: false };
             let cur = 0;
             let failCount = 0;
+            let stalledBeats = 0;
             Logger.updateTask(q.id, { name: t.name, type: "ACTIVITY", cur, max: t.target, status: "RUNNING" });
 
             const startTime = Date.now();
 
             while (cur < t.target && RUNTIME.running) {
                 try {
-                    const r = await Traffic.enqueue(`/quests/${q.id}/heartbeat`, { stream_key: key, terminal: false });
-                    cur = r?.body?.progress?.[t.keyName]?.value ?? r?.body?.progress?.PLAY_ACTIVITY?.value ?? cur + 20;
+                    const r = await Traffic.enqueue(`/quests/${q.id}/heartbeat`, beat);
+                    const reported = r?.body?.progress?.[t.keyName]?.value ?? r?.body?.progress?.PLAY_ACTIVITY?.value;
+                    // Never invent progress. This used to fall back to `cur + 20`, so a server
+                    // that credited nothing still walked the counter to target and the quest
+                    // was reported complete on the strength of numbers Orion made up. Count
+                    // the silent beats and give up instead.
+                    if (typeof reported === 'number') { cur = reported; stalledBeats = 0; }
+                    else if (++stalledBeats >= SYS.MAX_TASK_FAILURES) return Tasks.failTask(q, t, 'Discord credited no progress');
                     Logger.updateTask(q.id, { name: t.name, type: "ACTIVITY", cur, max: t.target, status: "RUNNING" });
                     failCount = 0;
                     if (cur >= t.target) {
-                        try { await Traffic.enqueue(`/quests/${q.id}/heartbeat`, { stream_key: key, terminal: true }); }
+                        try { await Traffic.enqueue(`/quests/${q.id}/heartbeat`, { ...beat, terminal: true }); }
                         catch (e) { Logger.log(`[ACTIVITY] Final heartbeat failed: ${e?.message}`, 'debug'); }
                         break;
                     }
@@ -1945,6 +1998,7 @@
                     StreamStore: W.findStore('ApplicationStreamingStore'),
                     ChanStore: W.findStore('ChannelStore'),
                     GuildChanStore: W.findStore('GuildChannelStore'),
+                    UserStore: W.findStore('UserStore'),
                     Dispatcher: W.Common?.FluxDispatcher || W.findByProps('dispatch', 'subscribe', 'flushWaitQueue'),
                     API: W.Common?.RestAPI || W.findByProps('get', 'post', 'del'),
                     Router: routerModule,
@@ -2069,6 +2123,7 @@
                 StreamStore: findStore('ApplicationStreamingStore'),
                 ChanStore: findStore('ChannelStore'),
                 GuildChanStore: findStore('GuildChannelStore'),
+                UserStore: findStore('UserStore'),
                 Dispatcher: findDispatcher(),
                 API: findAPI(),
                 Router: findRouter(),
@@ -2154,6 +2209,17 @@
         while (RUNTIME.running) {
             try {
                 Logger.log(`[Cycle] Starting loop #${loopCount}...`, 'info');
+
+                // Discord tells the client when the account may not enroll in anything, and
+                // the quest list carries the timestamp. Checked every cycle rather than once
+                // at start, because the block can land mid-run, and running past it means
+                // hammering an endpoint that is already refusing us.
+                const blockedUntil = enrollmentBlockedUntil();
+                if (blockedUntil) {
+                    Logger.log(`[System] Discord has blocked quest enrollment on this account until ${blockedUntil.toLocaleString()}. Stopping instead of retrying.`, 'err');
+                    break;
+                }
+
                 quests = getQuests();
 
                 // Filter out completed, expired, blacklisted, skipped, AND unselected quests
@@ -2234,7 +2300,12 @@
                             if (!q.userStatus?.enrolledAt) {
                                 Logger.log(`[Enroll] Accepting quest: ${tInfo.name}`, 'info');
                                 try {
-                                    await Traffic.enqueue(`/quests/${q.id}/enroll`, { location: 11, is_targeted: false });
+                                    await Traffic.enqueue(`/quests/${q.id}/enroll`, {
+                                        location: 11,
+                                        is_targeted: false,
+                                        metadata_sealed: null,
+                                        traffic_metadata_sealed: sealedFor(q.id)
+                                    });
                                     await sleep(rnd(800, 1500));
                                 } catch (e) {
                                     const err = ErrorHandler.classify(e);
