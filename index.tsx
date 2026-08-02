@@ -36,7 +36,13 @@ function statusSummary(): string {
     if (entries.length === 0) return running ? "Running. No active tasks yet." : "Idle.";
     const lines = entries.map(e => {
         const pct = e.max > 0 ? Math.min(100, (e.cur / e.max) * 100).toFixed(0) : "?";
-        return `• ${e.name}: ${e.status} (${pct}%)`;
+        // The userscript parks a quest as PENDING and its dashboard draws an ENROLL button.
+        // There is no dashboard here, so a bare "PENDING (0%)" would read as a stall with no
+        // way to tell what unblocks it. Say what the quest is waiting for instead.
+        const waiting = e.actionRequired === "ENROLL"
+            ? ", waiting for you to accept it in Discord's Quests page"
+            : "";
+        return `• ${e.name}: ${e.status} (${pct}%)${waiting}`;
     });
     return [`${running ? "Running" : "Stopped"}, ${entries.length} task(s):`, ...lines].join("\n");
 }
