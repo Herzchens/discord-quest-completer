@@ -1,5 +1,5 @@
 /*
- * OrionQuests — Vencord userplugin
+ * OrionQuests, a Vencord userplugin
  * Copyright (c) 2026 nyxxbit
  * SPDX-License-Identifier: MIT
  *
@@ -42,7 +42,7 @@ export interface TaskCallbacks {
 export class TaskRunner {
     public skipped = new Set<string>();
     /**
-     * Quests skipped only because the achievement bypass was switched off — a refusal
+     * Quests skipped only because the achievement bypass was switched off. A refusal
      * to act, not a quest that can't be done. Tracked apart from `skipped` so turning
      * the setting on can put them back in play. See retryConsentSkipped().
      */
@@ -54,7 +54,7 @@ export class TaskRunner {
     private cb: TaskCallbacks;
     /**
      * Real getStreamerActiveStreamMetadata, stashed once like Patcher does with RunStore.
-     * May legitimately be undefined on builds that don't expose it — see the restore in generic().
+     * May legitimately be undefined on builds that don't expose it, see the restore in generic().
      */
     private streamReal: any;
     private streamSpoofs = 0;
@@ -90,7 +90,7 @@ export class TaskRunner {
         return entry?.value ?? userStatus?.streamProgressSeconds ?? 0;
     }
 
-    /** Detect task type from quest config. Order matters — ACHIEVEMENT_IN_ACTIVITY before generic ACTIVITY. */
+    /** Detect task type from quest config. Order matters: ACHIEVEMENT_IN_ACTIVITY before generic ACTIVITY. */
     detectType(cfg: any, applicationId?: string): DetectedTask | null {
         const taskKeys = Object.keys(cfg.tasks);
         const typeMap: Array<{ key: string; type: TaskType; }> = [
@@ -222,7 +222,7 @@ export class TaskRunner {
     async generic(q: Quest, t: TaskInfo, type: TaskType, fallbackKey: string): Promise<void> {
         if (!this.runtime.running) return;
         // Prefer the key detected from the quest config. detectType matches task keys by
-        // substring, so a renamed variant (a PLAY_ON_DESKTOP_V2, say) still resolves — but
+        // substring, so a renamed variant (a PLAY_ON_DESKTOP_V2, say) still resolves, but
         // reading progress under a hardcoded legacy name would return undefined and pin the
         // task at 0 until the safety timer kills it.
         const key = t.keyName || fallbackKey;
@@ -256,7 +256,7 @@ export class TaskRunner {
                 // Restore from the original captured in the constructor, never from whatever is
                 // installed now: with concurrency > 1 a second STREAM task would otherwise stash
                 // the first task's spoof and "restore" that, leaving the store patched after the
-                // engine stops. Refcounted so the last task out puts the real method back — and
+                // engine stops. Refcounted so the last task out puts the real method back, and
                 // it restores even when the original was undefined, since assigning undefined
                 // back is the correct revert (same reasoning as index.js).
                 if (this.stores.StreamStore) {
@@ -318,7 +318,7 @@ export class TaskRunner {
                 watchdogTimer = setTimeout(() => {
                     if (cleaned || !this.runtime.running) return;
                     logger.error(beats === 0
-                        ? `[Task] Discord never reported progress for "${t.name}" — it isn't accepting the injected process on this client. Nothing to wait for.`
+                        ? `[Task] Discord never reported progress for "${t.name}". It is not accepting the injected process on this client, so there is nothing to wait for.`
                         : `[Task] Discord stopped reporting progress for "${t.name}" after ${beats} update(s). Giving up instead of idling.`);
                     this.failTask(q, t, "No heartbeat from Discord");
                     finish();
@@ -468,13 +468,13 @@ export class TaskRunner {
             const progRes = await Native.discordsaysProgress({ appId, questId: q.id, token: dsToken, target: t.target, referrer });
             if (!progRes.ok) throw new Error(`discordsays progress ${progRes.status}`);
 
-            logger.info(`[Bypass] Success — "${t.name}" completed via Discord Says.`);
+            logger.info(`[Bypass] Success. "${t.name}" completed via Discord Says.`);
             return true;
         } catch (e: any) {
             const code = e?.body?.code;
-            // 50165 = Cannot launch Age-Gated Activity — activity is age-gated or has been delisted
+            // 50165 = Cannot launch Age-Gated Activity: age-gated or delisted
             if (code === 50165) {
-                logger.warn(`[Bypass] "${t.name}" can't be launched (age-gated or delisted). Discord blocks the proxy ticket — nothing we can do.`);
+                logger.warn(`[Bypass] "${t.name}" can't be launched (age-gated or delisted). Discord blocks the proxy ticket, so there is nothing we can do.`);
                 return false;
             }
             const parts: string[] = [];
@@ -484,7 +484,7 @@ export class TaskRunner {
             else if (e?.message) parts.push(e.message);
             else if (typeof e === "string") parts.push(e);
             else if (e) { try { parts.push(JSON.stringify(e).slice(0, 200)); } catch { parts.push(String(e)); } }
-            logger.warn(`[Bypass] Failed: ${parts.join(" — ") || "unknown"}`);
+            logger.warn(`[Bypass] Failed: ${parts.join(", ") || "unknown"}`);
             return false;
         } finally {
             // Revoke ONLY the grant we created, diffed against the pre-flow snapshot.
@@ -504,10 +504,10 @@ export class TaskRunner {
     }
 
     /**
-     * ACHIEVEMENT_IN_ACTIVITY — target is usually 1 (a milestone, not seconds).
+     * ACHIEVEMENT_IN_ACTIVITY. Target is usually 1 (a milestone, not seconds).
      *   1) heartbeat spoof (works for some quests)
      *   2) discordsays OAuth bypass (silver bullet)
-     *   3) skip on failure — no more 25-min passive wait
+     *   3) skip on failure, with no 25-minute passive wait
      */
     async ACHIEVEMENT(q: Quest, t: TaskInfo): Promise<void> {
         this.cb.onProgress(q.id, { name: t.name, type: "ACHIEVEMENT", cur: 0, max: t.target, status: "RUNNING" });
@@ -547,7 +547,7 @@ export class TaskRunner {
             if (cur >= t.target && this.runtime.running) return this.cb.onComplete(q, t);
         }
 
-        // heartbeat failed or skipped — try the discordsays OAuth bypass
+        // heartbeat failed or skipped, so try the discordsays OAuth bypass
         if (!this.runtime.running) return;
         const bypassed = await this.bypassAchievement(q, t);
         if (bypassed) return this.cb.onComplete(q, t);
@@ -556,7 +556,7 @@ export class TaskRunner {
 
         // A bypass that never ran because the consent toggle is off is not the same as one
         // that ran and failed. Recorded separately so switching the toggle on returns the
-        // quest to the queue — otherwise it stays in `skipped` for the life of the run and
+        // quest to the queue. Otherwise it stays in `skipped` for the life of the run and
         // the setting looks like it did nothing.
         if (!settings.store.achievementBypass) {
             this.consentSkipped.add(q.id);
@@ -564,7 +564,7 @@ export class TaskRunner {
         }
 
         // both auto-paths failed: skip the quest. no more 25-min passive wait.
-        logger.warn(`[Task] Skipping "${t.name}" — no auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`);
+        logger.warn(`[Task] Skipping "${t.name}". No auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`);
         return this.failTask(q, t, "Cannot auto-complete");
     }
 

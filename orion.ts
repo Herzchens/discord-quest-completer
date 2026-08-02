@@ -1,5 +1,5 @@
 /*
- * OrionQuests — Vencord userplugin
+ * OrionQuests, a Vencord userplugin
  * Copyright (c) 2026 nyxxbit
  * SPDX-License-Identifier: MIT
  *
@@ -25,7 +25,7 @@ const logger = new Logger("OrionQuests");
 
 // GAME/STREAM quests need the desktop process-injection path, so we skip them
 // silently when running in a browser context. Use Vencord's build-time globals
-// (IS_DISCORD_DESKTOP / IS_VESKTOP) instead of probing window.DiscordNative —
+// (IS_DISCORD_DESKTOP / IS_VESKTOP) instead of probing window.DiscordNative:
 // the preload global isn't reliably visible from the plugin's execution context,
 // which made the desktop build wrongly skip game quests (issue #35).
 const IS_DESKTOP = IS_DISCORD_DESKTOP || IS_VESKTOP;
@@ -109,7 +109,7 @@ export function subscribeDashboard(fn: () => void): () => void {
 export function readDashboard(): DashboardEntry[] {
     return Array.from(dashboard.values());
 }
-/** Single source of truth for "is the engine up" — index.tsx used to keep its own flag. */
+/** Single source of truth for "is the engine up". index.tsx used to keep its own flag. */
 export function isEngineRunning(): boolean {
     return RUNTIME.running;
 }
@@ -122,7 +122,7 @@ function setEntry(id: string, partial: Partial<DashboardEntry> & { name: string;
     // A stopped engine must never leave an in-flight status behind: mainLoop skips quests
     // whose entry reads RUNNING, so a late poll landing after shutdown would lock that
     // quest out of every future start. Terminal updates (COMPLETED/CLAIMED/FAILED) still
-    // get through — those are results worth keeping.
+    // get through, since those are results worth keeping.
     if (!RUNTIME.running && (partial.status === "RUNNING" || partial.status === "QUEUE")) return;
 
     const prev = dashboard.get(id) ?? { id, claimable: false, actionRequired: null } as DashboardEntry;
@@ -148,9 +148,9 @@ function loadStores(): Stores {
     if (!Dispatcher) throw new Error("FluxDispatcher not found");
     if (!API) throw new Error("RestAPI not found");
 
-    if (!StreamStore) logger.warn("StreamStore not found — STREAM quests will be limited");
-    if (!ChanStore) logger.warn("ChannelStore not found — ACTIVITY quests may not find a channel");
-    if (!GuildChanStore) logger.warn("GuildChannelStore not found — ACTIVITY guild fallback unavailable");
+    if (!StreamStore) logger.warn("StreamStore not found, STREAM quests will be limited");
+    if (!ChanStore) logger.warn("ChannelStore not found, ACTIVITY quests may not find a channel");
+    if (!GuildChanStore) logger.warn("GuildChannelStore not found, ACTIVITY guild fallback unavailable");
 
     return { QuestStore, RunStore, StreamStore, ChanStore, GuildChanStore, Dispatcher, API };
 }
@@ -253,10 +253,10 @@ async function mainLoop(): Promise<void> {
                         continue;
                     }
                     // GAME/STREAM impersonate a specific application. Without a real id the fake
-                    // process is unidentifiable and Discord silently never counts it — skip loudly
+                    // process is unidentifiable and Discord silently never counts it, so skip loudly
                     // instead of running a task that can't finish (issue #43).
                     if ((type === "GAME" || type === "STREAM") && !appId) {
-                        logger.warn(`[Quest] "${q.config?.messages?.questName ?? q.id}" has no application id in its config — can't spoof the game. Skipping.`);
+                        logger.warn(`[Quest] "${q.config?.messages?.questName ?? q.id}" has no application id in its config, so the game cannot be spoofed. Skipping.`);
                         // activeQuests() filters on the TaskRunner's set; RUNTIME.skipped alone is
                         // never read, so skipping there re-detects and re-warns every cycle forever.
                         RUNTIME.skipped.add(q.id);
@@ -283,7 +283,7 @@ async function mainLoop(): Promise<void> {
                                 await traffic!.enqueue(`/quests/${q.id}/enroll`, { location: 11, is_targeted: false });
                                 await sleep(rnd(800, 1500));
                             } catch (e: any) {
-                                // one definition of "this quest is gone" — traffic.ts owns it
+                                // one definition of "this quest is gone", owned by traffic.ts
                                 if (isSkippableQuest(e)) {
                                     RUNTIME.skipped.add(q.id);
                                     tasks!.skipped.add(q.id);
@@ -348,7 +348,7 @@ export async function startOrion(): Promise<void> {
 
     try {
         stores = loadStores();
-        // pass a getter, not a snapshot — the setting is toggleable mid-run
+        // pass a getter, not a snapshot: the setting is toggleable mid-run
         patcher = new Patcher(stores, () => !!settings.store.hideActivity);
         SettingsStore.addChangeListener(hideActivityPath(), onHideActivityChanged);
         traffic = new Traffic(stores.API, () => RUNTIME.running);
@@ -362,7 +362,7 @@ export async function startOrion(): Promise<void> {
         setAchievementBypassHook(enabled => {
             if (!enabled || !tasks) return;
             const restored = tasks.retryConsentSkipped();
-            if (restored > 0) logger.info(`[Settings] Achievement bypass enabled — retrying ${restored} skipped quest(s) on the next cycle.`);
+            if (restored > 0) logger.info(`[Settings] Achievement bypass enabled, retrying ${restored} skipped quest(s) on the next cycle.`);
         });
 
         try {
@@ -404,7 +404,7 @@ export function stopOrion(): void {
     }
     emitDashboard();
 
-    // Drop the settings bridge with everything else it points at — a hook holding a
+    // Drop the settings bridge with everything else it points at. A hook holding a
     // torn-down TaskRunner is the same leak as any other module state outliving the engine.
     setAchievementBypassHook(null);
 
@@ -414,5 +414,5 @@ export function stopOrion(): void {
     traffic = null;
     tasks = null;
 
-    logger.info(`Stopped. ${failed > 0 ? `${failed} cleanup(s) threw — see errors above.` : "All cleanups flushed cleanly."}`);
+    logger.info(`Stopped. ${failed > 0 ? `${failed} cleanup(s) threw, see errors above.` : "All cleanups flushed cleanly."}`);
 }

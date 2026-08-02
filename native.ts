@@ -1,10 +1,10 @@
 /*
- * OrionQuests — Vencord userplugin
+ * OrionQuests, a Vencord userplugin
  * Copyright (c) 2026 nyxxbit
  * SPDX-License-Identifier: MIT
  *
  * Native (main-process) IPC handlers. Discord's renderer CSP blocks
- * connect-src to *.discordsays.com — the ACHIEVEMENT bypass needs to
+ * connect-src to *.discordsays.com, so the ACHIEVEMENT bypass has to
  * round-trip those POSTs through the main process where Node fetch
  * runs without CSP restrictions.
  */
@@ -13,7 +13,7 @@ import { IpcMainInvokeEvent } from "electron";
 
 // This is the real trust boundary: the renderer could be compromised and these handlers run
 // in the privileged, CSP-free main process. Validate every renderer-supplied value that shapes
-// the request, not just appId — appId and questId must be numeric, and the referrer must be
+// the request, not just appId: appId and questId must be numeric, and the referrer must be
 // https pointing exactly at this app's discordsays host.
 const NUMERIC_ID = /^\d+$/;
 

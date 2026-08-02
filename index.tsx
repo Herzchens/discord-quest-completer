@@ -1,5 +1,5 @@
 /*
- * OrionQuests — Vencord userplugin
+ * OrionQuests, a Vencord userplugin
  * Copyright (c) 2026 nyxxbit
  * SPDX-License-Identifier: MIT
  *
@@ -18,7 +18,7 @@ import { settings } from "./settings";
 // synchronously before its first await, so this reads true immediately after the call below.
 async function ensureStart(): Promise<string> {
     if (isEngineRunning()) return "Already running.";
-    // fire and forget — main loop awaits internally; teardown handled by startOrion's finally
+    // fire and forget. The main loop awaits internally, teardown is handled by startOrion's finally
     startOrion();
     return "Started.";
 }
@@ -44,10 +44,10 @@ function statusSummary(): string {
 export default definePlugin({
     name: "OrionQuests",
     description:
-        "Auto-complete every Discord Quest in seconds — game, video, stream, activity, and achievement quests.",
+        "Auto-completes Discord Quests: game, video, stream, activity, and achievement.",
     authors: [{ name: "syntt_", id: 1419678867005767783n }],
     // UserSettingsAPI is not enabled by default, and getUserSetting() throws outright
-    // for plugins that don't declare it — patcher.ts needs it to flip showCurrentGame
+    // for plugins that don't declare it. patcher.ts needs it to flip showCurrentGame
     // off for the hideActivity setting.
     dependencies: ["UserSettingsAPI"],
     settings,

@@ -5,7 +5,7 @@ export default [
         // The Vencord userplugin sources (index.tsx, native.ts, orion.ts, ...)
         // live at the repo root so UserpluginInstaller can clone this repo
         // straight into src/userplugins. They are TypeScript and are built by
-        // Vencord's own toolchain — not by this config. Ignore them here.
+        // Vencord's own toolchain, not by this config. Ignore them here.
         ignores: ["**/*.ts", "**/*.tsx"],
     },
     {

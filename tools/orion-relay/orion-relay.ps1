@@ -1,4 +1,4 @@
-# Orion Relay — tiny localhost HTTP relay for the userscript ACHIEVEMENT bypass.
+# Orion Relay: a small localhost HTTP relay for the userscript ACHIEVEMENT bypass.
 #
 # Discord's renderer CSP allows connect-src to http://127.0.0.1:* but blocks
 # *.discordsays.com directly. This script listens on 127.0.0.1:43210 and forwards
@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Continue'
 $port = 43210
 $prefix = "http://127.0.0.1:$port/"
 
-# allowed upstream hosts — we only forward to discordsays activity backends
+# allowed upstream hosts. Only discordsays activity backends are forwarded to.
 $allowedHostPattern = '^[0-9]+\.discordsays\.com$'
 
 $listener = New-Object System.Net.HttpListener
@@ -73,19 +73,19 @@ while ($listener.IsListening) {
         continue
     }
 
-    # CORS preflight — any path
+    # CORS preflight, any path
     if ($method -eq 'OPTIONS') {
         Write-Response $ctx 204 ''
         continue
     }
 
-    # Health probe — userscript uses this to detect the relay
+    # Health probe. The userscript uses this to detect the relay.
     if ($method -eq 'GET' -and $path -eq '/health') {
         Write-Response $ctx 200 '{"ok":true,"name":"orion-relay","version":"1"}'
         continue
     }
 
-    # Proxy endpoint — POST {url, headers, body} → forward to discordsays
+    # Proxy endpoint. POST {url, headers, body} is forwarded to discordsays.
     if ($method -eq 'POST' -and $path -eq '/proxy') {
         $responded = $false
         try {
@@ -127,7 +127,7 @@ while ($listener.IsListening) {
             foreach ($pair in $payload.headers.PSObject.Properties) {
                 $name = $pair.Name
                 $value = [string]$pair.Value
-                # Strict allowlist — only the headers the bypass actually needs. Anything else
+                # Strict allowlist: only the headers the bypass actually needs. Anything else
                 # a caller tries to smuggle through (Cookie, X-Forwarded-For, etc.) is dropped.
                 switch ($name.ToLowerInvariant()) {
                     'content-type'       { $upstream.ContentType = $value }
@@ -171,7 +171,7 @@ while ($listener.IsListening) {
             $result = @{ ok = $ok; status = $statusCode; body = $resBody } | ConvertTo-Json -Compress
 
             # Log BEFORE responding so a logging error can't trigger a double-Write-Response
-            # in the catch block below. Use $upstreamHost (not $host — $host is a PS automatic variable).
+            # in the catch block below. Use $upstreamHost, since $host is a PowerShell automatic variable.
             $upstreamHost = $upstreamUri.Host
             Write-Host "[$(Get-Date -Format HH:mm:ss)] POST $($upstreamUri.PathAndQuery) -> $statusCode ($upstreamHost)"
 

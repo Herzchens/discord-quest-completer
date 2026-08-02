@@ -1,5 +1,5 @@
 /*
- * OrionQuests — Vencord userplugin
+ * OrionQuests, a Vencord userplugin
  * Copyright (c) 2026 nyxxbit
  * SPDX-License-Identifier: MIT
  *
@@ -23,7 +23,7 @@ export function setAchievementBypassHook(fn: Handler<boolean> | null): void {
     onAchievementBypass = fn;
 }
 
-/** No-op while the engine is down — settings are read fresh at the next start. */
+/** No-op while the engine is down. Settings are read fresh at the next start. */
 export function fireAchievementBypassChanged(value: boolean): void {
     onAchievementBypass?.(value);
 }

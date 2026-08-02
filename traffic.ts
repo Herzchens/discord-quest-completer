@@ -1,5 +1,5 @@
 /*
- * OrionQuests — Vencord userplugin
+ * OrionQuests, a Vencord userplugin
  * Copyright (c) 2026 nyxxbit
  * SPDX-License-Identifier: MIT
  *
@@ -108,7 +108,7 @@ export class Traffic {
                                 this.queue.push(req);
                                 this.process();
                             } else {
-                                // settle on shutdown so an awaiter doesn't hang forever — this
+                                // settle on shutdown so an awaiter doesn't hang forever. This
                                 // request is no longer in the queue, so the drain path above
                                 // can't reject it for us (matches index.js)
                                 req.reject(new Error("Shutdown"));

@@ -1,10 +1,10 @@
 /*
- * OrionQuests — Vencord userplugin
+ * OrionQuests, a Vencord userplugin
  * Copyright (c) 2026 nyxxbit
  * SPDX-License-Identifier: MIT
  *
  * Shared types. Discord's internal Flux store shapes are loose by
- * nature — we describe only the fields we touch.
+ * nature, so we describe only the fields we touch.
  */
 
 export interface Quest {

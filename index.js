@@ -72,7 +72,7 @@
 
     /* ── OAuth consent gate ──────────────────────────────────────
        Shown before the ACHIEVEMENT bypass OAuth-authorizes a quest's
-       app on the user's account. Per-app, per-run, in-memory only —
+       app on the user's account. Per-app, per-run, in-memory only and
        never persisted, so it can't silently authorize forever. Default
        decline: Cancel / Esc / backdrop / 60s idle all resolve false, so
        an AFK user never authorizes anything. CSP-safe (addEventListener,
@@ -137,7 +137,7 @@
     });
 
     const CONST = Object.freeze({
-        ID: "1412491570820812933",  // blacklisted quest — known to break enrollment
+        ID: "1412491570820812933",  // blacklisted quest, known to break enrollment
         EVT: Object.freeze({
             HEARTBEAT: "QUESTS_SEND_HEARTBEAT_SUCCESS",
             GAME: "RUNNING_GAMES_CHANGE",
@@ -160,7 +160,7 @@
 
     // Escape server-controlled strings before they touch innerHTML. Quest and reward names
     // come from Discord API fields (questName, reward name) and can carry markup; a crafted
-    // title like "><img src=x onerror=...> would otherwise inject into the dashboard DOM —
+    // title like "><img src=x onerror=...> would otherwise inject into the dashboard DOM,
     // the exact inline-injection Discord's CSP exists to stop.
     const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -196,7 +196,7 @@
 
     /* ── UI + logger ────────────────────────────────────────────
        Injects a draggable dashboard into Discord's DOM.
-       Doubles as task-state store — render() rebuilds on every update.
+       Doubles as task-state store. render() rebuilds on every update.
     ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── */
 
     const Logger = {
@@ -419,7 +419,7 @@
                             this.updateTask(questId, { ...taskData, status: "CLAIMED", claimable: false, claimState: null });
                             setTimeout(() => this.removeTask(questId), 2000);
                         } else {
-                            // 2xx without claimed_at — the reward isn't claimed, and without this
+                            // 2xx without claimed_at. The reward isn't claimed, and without this
                             // branch claimState stayed WAITING forever, so the button was dead for
                             // the rest of the session with no way back.
                             this.log(`[Claim] Reward for "${taskData.name}" wasn't confirmed. Claim it from Discord's Quests page.`, 'warn');
@@ -438,7 +438,7 @@
 
             // Keep the reference so shutdown() can detach it. An anonymous listener here
             // survived STOP and stacked one more copy per paste, each closing over a dead
-            // dashboard — the same stacking the gear handler below is careful to avoid.
+            // dashboard, the same stacking the gear handler below is careful to avoid.
             this._hotkey = e => (e.key === '>' || (e.shiftKey && e.key === '.')) && this.toggle();
             document.addEventListener('keydown', this._hotkey);
 
@@ -480,7 +480,7 @@
             Patcher.clean();
 
             // Free the re-entry guard now, not in a second. Holding it for the grace period
-            // meant a paste inside that window was refused with "Already running." — and the
+            // meant a paste inside that window was refused with "Already running.", and the
             // UI that guard had just re-shown was then removed by this very timer, leaving
             // nothing on screen and no hint that pasting again would work.
             window.orionLock = false;
@@ -506,10 +506,10 @@
         // own progress locally, so free-running +1/s matches reality closely enough.
         // GAME/STREAM don't: their only source of truth is Discord's heartbeat reply, which
         // lands every ~30s. Free-running there invented a moving bar even when Discord was
-        // reporting nothing at all — it reached 100% while the quest sat at 0% in Discord's
+        // reporting nothing at all. It reached 100% while the quest sat at 0% in Discord's
         // own UI (issue #43). So they extrapolate strictly from the last heartbeat: the bar
         // is smooth while beats arrive, and frozen at the last known value when they stop.
-        // ACHIEVEMENT is a milestone count, not seconds — never ticked.
+        // ACHIEVEMENT is a milestone count, not seconds, so it is never ticked.
         SERVER_DRIVEN: ["GAME", "STREAM"],
 
         startTicker() {
@@ -521,7 +521,7 @@
 
                     let cur;
                     if (this.SERVER_DRIVEN.includes(task.type)) {
-                        if (task.serverAt == null) continue;  // no heartbeat yet — show nothing
+                        if (task.serverAt == null) continue;  // no heartbeat yet, show nothing
                         cur = Math.min(task.serverCur + (Date.now() - task.serverAt) / 1000, task.max);
                     } else {
                         cur = Math.min(task.cur + 1, task.max);
@@ -874,7 +874,7 @@
     /* ── request queue ────────────────────────────────────────────
        FIFO queue processed one-at-a-time to respect rate limits.
        Retryable errors (429, 5xx) re-queue with exponential backoff.
-       Client errors (4xx) reject immediately — caller decides what to do.
+       Client errors (4xx) reject immediately. The caller decides what to do.
     ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── */
 
     const Traffic = {
@@ -953,10 +953,10 @@
        RPC payloads are injected and cleaned up on task completion.
     ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── */
 
-    let Mods = {};  // populated by loadModules() — holds Discord webpack internals
+    let Mods = {};  // populated by loadModules(), holds Discord webpack internals
 
     /* HIDE_ACTIVITY note: skipping our own LOCAL_ACTIVITY_UPDATE dispatch is not enough
-       to hide the status. Discord builds the "Playing X" presence from the store itself —
+       to hide the status. Discord builds the "Playing X" presence from the store itself:
        LocalActivityStore/ActivityTrackingStore read getVisibleRunningGames()/getVisibleGame(),
        which we patch below for quest eligibility (issue #43). So the only way to stay
        invisible while keeping the spoof is to turn Discord's own status.showCurrentGame off
@@ -969,7 +969,7 @@
 
         // Overriding getRunningGames alone is no longer enough. Canary derives quest
         // eligibility from the "visible"/"candidate" views, and a game absent from those
-        // never gets a heartbeat scheduled — the quest sits at 0% forever (issue #43).
+        // never gets a heartbeat scheduled, so the quest sits at 0% forever (issue #43).
         // Older builds don't expose all of these, so each is patched only if present.
         PATCHED: ['getRunningGames', 'getGameForPID', 'getVisibleGame', 'getVisibleRunningGames',
                   'getRunningDiscordApplicationIds', 'getCandidateGames'],
@@ -982,7 +982,7 @@
                 if (typeof Store[name] === 'function') this.real[name] = Store[name];
             }
             const absent = this.PATCHED.filter(n => !this.real[n]);
-            if (absent.length) Logger.log(`[Patcher] Store lacks ${absent.join(', ')} — not patching those.`, 'debug');
+            if (absent.length) Logger.log(`[Patcher] Store lacks ${absent.join(', ')}, not patching those.`, 'debug');
         },
 
         // swap between real and patched store methods
@@ -994,7 +994,7 @@
                 S.getRunningGames = () => [...real.getRunningGames.call(S), ...this.games];
                 S.getGameForPID = (pid) => this.games.find(g => g.pid === pid) || real.getGameForPID.call(S, pid);
 
-                // our game wins as "the" visible one — that's the whole point of the spoof
+                // our game wins as "the" visible one, which is the whole point of the spoof
                 if (real.getVisibleGame) S.getVisibleGame = () => this.games[0] ?? real.getVisibleGame.call(S);
                 if (real.getVisibleRunningGames) S.getVisibleRunningGames = () => [...real.getVisibleRunningGames.call(S), ...this.games];
                 if (real.getCandidateGames) S.getCandidateGames = () => [...real.getCandidateGames.call(S), ...this.games];
@@ -1002,7 +1002,7 @@
                     S.getRunningDiscordApplicationIds = () => {
                         const ids = real.getRunningDiscordApplicationIds.call(S);
                         const ours = this.games.map(g => String(g.id));
-                        // shape varies by build — preserve whichever collection came back
+                        // shape varies by build, so preserve whichever collection came back
                         return ids instanceof Set ? new Set([...ids, ...ours]) : [...(ids ?? []), ...ours];
                     };
                 }
@@ -1020,7 +1020,7 @@
             const shouldSuppress = CONFIG.HIDE_ACTIVITY && this.games.length > 0;
 
             if (!setting) {
-                if (shouldSuppress) Logger.log('[Patcher] status.showCurrentGame not found — cannot hide activity.', 'warn');
+                if (shouldSuppress) Logger.log('[Patcher] status.showCurrentGame not found, cannot hide activity.', 'warn');
                 return;
             }
 
@@ -1031,11 +1031,11 @@
                     this.savedShowCurrentGame = setting.getSetting() !== false;
                     if (this.savedShowCurrentGame) {
                         Promise.resolve(setting.updateSetting(false)).catch(e =>
-                            Logger.log(`[Patcher] Could not turn showCurrentGame off — activity stays visible: ${e.message}`, 'warn'));
+                            Logger.log(`[Patcher] Could not turn showCurrentGame off, activity stays visible: ${e.message}`, 'warn'));
                     }
                 } catch (e) {
                     this.savedShowCurrentGame = null;
-                    Logger.log(`[Patcher] showCurrentGame read failed — cannot hide activity: ${e.message}`, 'warn');
+                    Logger.log(`[Patcher] showCurrentGame read failed, cannot hide activity: ${e.message}`, 'warn');
                 }
             } else if (!shouldSuppress && this.savedShowCurrentGame !== null) {
                 const restore = this.savedShowCurrentGame;
@@ -1043,9 +1043,9 @@
                 if (restore) {
                     try {
                         Promise.resolve(setting.updateSetting(true)).catch(e =>
-                            Logger.log(`[Patcher] Failed to restore showCurrentGame — re-enable "Display current activity as a status message" in Discord settings: ${e.message}`, 'err'));
+                            Logger.log(`[Patcher] Failed to restore showCurrentGame. Re-enable "Display current activity as a status message" in Discord settings: ${e.message}`, 'err'));
                     } catch (e) {
-                        Logger.log(`[Patcher] Failed to restore showCurrentGame — re-enable "Display current activity as a status message" in Discord settings: ${e.message}`, 'err');
+                        Logger.log(`[Patcher] Failed to restore showCurrentGame. Re-enable "Display current activity as a status message" in Discord settings: ${e.message}`, 'err');
                     }
                 }
             }
@@ -1128,7 +1128,7 @@
     ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── */
 
     const Tasks = {
-        skipped: new Set(),  // quest IDs that returned 4xx — no point retrying
+        skipped: new Set(),  // quest IDs that returned 4xx, no point retrying
         _streamReal: undefined,  // untouched StreamStore method, captured before the first spoof
         _streamSpoofs: 0,        // active STREAM tasks holding the spoof
 
@@ -1153,7 +1153,7 @@
         },
 
         // match task keys from quest config to our handler types
-        // order matters — ACHIEVEMENT_IN_ACTIVITY must match before generic ACTIVITY
+        // order matters: ACHIEVEMENT_IN_ACTIVITY must match before generic ACTIVITY
         detectType(cfg, applicationId) {
             const taskKeys = Object.keys(cfg.tasks);
             const typeMap = [
@@ -1302,11 +1302,11 @@
         GAME(q, t, s) { return Tasks.generic(q, t, "GAME", "PLAY_ON_DESKTOP", s); },
         STREAM(q, t, s) { return Tasks.generic(q, t, "STREAM", "STREAM_ON_DESKTOP", s); },
 
-        // shared path for GAME/STREAM — injects fake process, subscribes to heartbeat events
+        // shared path for GAME/STREAM. Injects a fake process and subscribes to heartbeat events.
         async generic(q, t, type, fallbackKey, s) {
             if (!RUNTIME.running) return;
             // Prefer the key detected from the quest config. detectType matches task keys by
-            // substring, so a renamed variant (a PLAY_ON_DESKTOP_V2, say) still resolves —
+            // substring, so a renamed variant (a PLAY_ON_DESKTOP_V2, say) still resolves,
             // but reading progress under a hardcoded legacy name would return undefined and
             // pin the task at 0 until the safety timer kills it.
             const key = t.keyName || fallbackKey;
@@ -1338,7 +1338,7 @@
                         Tasks._streamSpoofs++;
                         Mods.StreamStore.getStreamerActiveStreamMetadata = () => ({ id: gameData.id, pid, sourceName: gameData.name });
                     }
-                    // restore unconditionally when the store exists — assigning back an
+                    // restore unconditionally when the store exists. Assigning back an
                     // undefined original is the correct revert. Guarding on it being truthy
                     // would leave our fake installed when the method was undefined at patch time.
                     cleanupHook = () => {
@@ -1396,7 +1396,7 @@
                     watchdogTimer = setTimeout(() => {
                         if (cleaned || !RUNTIME.running) return;
                         Logger.log(beats === 0
-                            ? `[Task] Discord never reported progress for "${t.name}" — it isn't accepting the injected process on this client. Nothing to wait for.`
+                            ? `[Task] Discord never reported progress for "${t.name}". It is not accepting the injected process on this client, so there is nothing to wait for.`
                             : `[Task] Discord stopped reporting progress for "${t.name}" after ${beats} update(s). Giving up instead of idling.`, 'err');
                         Tasks.failTask(q, t, 'No heartbeat from Discord');
                         finish();
@@ -1446,7 +1446,7 @@
         // POST to a CSP-restricted URL via the best available transport.
         // Returns { ok, status, body } on success, throws { status, body } on HTTP error
         // and TypeError on CSP/network. Probes in order: localhost relay (no mod needed
-        // — see tools/orion-relay/), VencordNative plugin (CSP-free via IPC to main
+        // see tools/orion-relay/), VencordNative plugin (CSP-free via IPC to main
         // process), DiscordNative HTTP candidates (if any exist), raw fetch.
         _relayUrl: 'http://127.0.0.1:43210',
         _relayProbe: null,
@@ -1476,7 +1476,7 @@
         },
 
         async _bypassPost(url, headers, jsonBody) {
-            // 1) Localhost relay (tools/orion-relay/) — CSP allows http://127.0.0.1:*,
+            // 1) Localhost relay (tools/orion-relay/). CSP allows http://127.0.0.1:*,
             //    the relay forwards to discordsays.com from outside the browser sandbox.
             //    This is the no-mod path: standalone userscript + tiny helper.
             if (await this._probeRelay()) {
@@ -1489,7 +1489,7 @@
                         redirect: 'error'
                     });
                 } catch (e) {
-                    // relay went away between probe and POST — drop the cached answer and let
+                    // relay went away between probe and POST, so drop the cached answer and let
                     // the next transport try, instead of failing the whole bypass on a dead port
                     this._relayProbe = null;
                     Logger.log(`[Bypass] Relay stopped responding, trying other transports: ${e?.message ?? e}`, 'debug');
@@ -1502,7 +1502,7 @@
                 }
             }
 
-            // 2) Vencord plugin native module — works if user has OrionQuests Vencord plugin
+            // 2) Vencord plugin native module. Works if the user has the OrionQuests Vencord plugin
             //    installed (`native.ts` at the repo root). Routes through Electron main process.
             try {
                 const helper = window.VencordNative?.pluginHelpers?.OrionQuests;
@@ -1530,7 +1530,7 @@
                 Logger.log(`[Bypass] VencordNative path errored: ${e?.message ?? e}`, 'debug');
             }
 
-            // 3) DiscordNative HTTP probe. Best-effort — no documented method exists,
+            // 3) DiscordNative HTTP probe. Best-effort, since no documented method exists,
             //    but new Discord builds occasionally expose one. We probe several
             //    plausible paths and use the first that's a callable function.
             const dn = window.DiscordNative;
@@ -1558,7 +1558,7 @@
                 }
             }
 
-            // 4) Direct fetch — works on web Discord (no CSP) or relaxed clients.
+            // 4) Direct fetch. Works on web Discord (no CSP) or relaxed clients.
             //    CSP-blocked on Discord Desktop: throws TypeError "Failed to fetch".
             //    redirect:'error' so a 3xx from discordsays can't bounce our auth token
             //    and proxy-ticket Referer to an arbitrary host.
@@ -1650,21 +1650,21 @@
                     JSON.stringify({ progress: t.target })
                 );
 
-                Logger.log(`[Bypass] Success — "${t.name}" completed via Discord Says.`, 'success');
+                Logger.log(`[Bypass] Success. "${t.name}" completed via Discord Says.`, 'success');
                 return true;
             } catch (e) {
                 // Discord renderer CSP blocks connect-src to *.discordsays.com. fetch() throws
                 // TypeError "Failed to fetch" without a status. There's no userscript workaround
-                // — the bypass needs a main-process HTTP client (Vencord plugin native module).
+                // for this: the bypass needs a main-process HTTP client (Vencord plugin native module).
                 if (e instanceof TypeError && /failed to fetch|networkerror/i.test(e.message)) {
-                    Logger.log(`[Bypass] Discord's CSP blocks the script from reaching discordsays.com. Use the Vencord plugin port for the auto-bypass — userscript can't bypass CSP. Skipping "${t.name}".`, 'warn');
+                    Logger.log(`[Bypass] Discord's CSP blocks the script from reaching discordsays.com. Use the Vencord plugin port for the auto-bypass, since a userscript cannot bypass CSP. Skipping "${t.name}".`, 'warn');
                     return false;
                 }
-                // Discord's API client rejects with {status, body:{code,message}}, not Error — stringify properly
+                // Discord's API client rejects with {status, body:{code,message}}, not Error, so stringify properly
                 const code = e?.body?.code;
-                // 50165 = Cannot launch Age-Gated Activity — activity is age-gated or has been delisted
+                // 50165 = Cannot launch Age-Gated Activity: age-gated or delisted
                 if (code === 50165) {
-                    Logger.log(`[Bypass] "${t.name}" can't be launched (age-gated or delisted). Discord blocks the proxy ticket — nothing we can do.`, 'warn');
+                    Logger.log(`[Bypass] "${t.name}" can't be launched (age-gated or delisted). Discord blocks the proxy ticket, so there is nothing we can do.`, 'warn');
                     return false;
                 }
                 const parts = [];
@@ -1674,7 +1674,7 @@
                 else if (e?.message) parts.push(e.message);
                 else if (typeof e === 'string') parts.push(e);
                 else if (e) { try { parts.push(JSON.stringify(e).slice(0, 200)); } catch { parts.push(String(e)); } }
-                Logger.log(`[Bypass] Failed: ${parts.join(' — ') || 'unknown'}`, 'warn');
+                Logger.log(`[Bypass] Failed: ${parts.join(', ') || 'unknown'}`, 'warn');
                 return false;
             } finally {
                 // Revoke ONLY the grant we created, diffed against the pre-flow snapshot.
@@ -1692,10 +1692,10 @@
             }
         },
 
-        // ACHIEVEMENT_IN_ACTIVITY — target is usually 1 (a milestone, not seconds).
+        // ACHIEVEMENT_IN_ACTIVITY. Target is usually 1 (a milestone, not seconds).
         // 1) heartbeat spoof (works for some quests)
         // 2) discordsays OAuth bypass (silver bullet)
-        // 3) skip on failure — no more 25-min passive wait
+        // 3) skip on failure, with no 25-minute passive wait
         async ACHIEVEMENT(q, t) {
             Logger.updateTask(q.id, { name: t.name, type: "ACHIEVEMENT", cur: 0, max: t.target, status: "RUNNING" });
 
@@ -1742,14 +1742,14 @@
                 if (cur >= t.target && RUNTIME.running) return Tasks.finish(q, t);
             }
 
-            // heartbeat path failed or skipped — try the Discord Says auth bypass
+            // heartbeat path failed or skipped, so try the Discord Says auth bypass
             if (!RUNTIME.running) return;
             const bypassed = await Tasks.bypassAchievement(q, t);
             if (bypassed) return Tasks.finish(q, t);
 
             // both auto-paths failed: skip the quest. no more 25-min passive wait.
             if (!RUNTIME.running) return;
-            Logger.log(`[Task] Skipping "${t.name}" — no auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`, 'warn');
+            Logger.log(`[Task] Skipping "${t.name}". No auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`, 'warn');
             return Tasks.failTask(q, t, 'Cannot auto-complete');
         },
 
@@ -1826,7 +1826,7 @@
                 try {
                     await sleep(rnd(2500, 6000));
                     if (!RUNTIME.running) return;
-                    // optimistic claim — try without captcha, show button if challenged
+                    // optimistic claim. Try without captcha, show the button if challenged.
                     const claimRes = await this.claimReward(q.id);
 
                     if (claimRes?.body?.claimed_at) {
@@ -1836,7 +1836,7 @@
                         return;
                     }
                 } catch (e) {
-                    // captcha required or other error — fall through to claim button
+                    // captcha required or other error, so fall through to the claim button
                     const needsCaptcha = e?.body?.captcha_key || e?.body?.captcha_sitekey;
                     if (needsCaptcha) {
                         Logger.log(`[Claim] Captcha required for "${t.name}". Use UI button.`, 'warn');
@@ -1863,7 +1863,7 @@
        one throws unless the *calling plugin* declared it as a dependency, and a console
        script has no plugin manifest. The proto action creators are identified by
        ProtoClass.typeName (Vencord's own discriminator) or the updateAsync+type===1 pair
-       (BetterDiscord's), and the BoolValue wrapper by its proto typeName — the setting
+       (BetterDiscord's), and the BoolValue wrapper by its proto typeName. The setting
        fields are wrapper messages, not raw booleans. */
     function findShowCurrentGameSetting(moduleCache) {
         if (!moduleCache) return undefined;
@@ -1891,14 +1891,14 @@
                         delay = exp.UserSettingsDelay?.INFREQUENT_USER_ACTION ?? 0;
                     }
                 }
-                if (actions && BoolValue) break;  // module cache is large — stop once both are in hand
+                if (actions && BoolValue) break;  // module cache is large, so stop once both are in hand
             } catch { }
         }
         if (!actions) return undefined;
-        if (!BoolValue) Logger.log('[Patcher] BoolValue proto type not found — hiding activity will only work if the setting already exists.', 'debug');
+        if (!BoolValue) Logger.log('[Patcher] BoolValue proto type not found. Hiding activity will only work if the setting already exists.', 'debug');
 
         return {
-            // undefined when the shape moved — callers treat that as "unknown, assume on"
+            // undefined when the shape moved. Callers treat that as "unknown, assume on".
             getSetting: () => actions.getCurrentValue?.()?.status?.showCurrentGame?.value,
             updateSetting: value => actions.updateAsync('status', settings => {
                 if (settings.showCurrentGame && typeof settings.showCurrentGame.value === 'boolean') {
@@ -1964,7 +1964,7 @@
             }
 
             // The push callback fires once per registered webpack runtime. Discord ships
-            // Sentry's stripped runtime alongside the real one — Sentry's `req.c` is tiny.
+            // Sentry's stripped runtime alongside the real one, and Sentry's `req.c` is tiny.
             // Pick the require with the largest cache so we ignore the Sentry instance.
             let req;
             webpackChunkdiscord_app.push([[Symbol()], {}, (r) => {
@@ -1979,7 +1979,7 @@
             const modules = Object.values(req.c);
 
             // real Flux stores have constructor.displayName set to their class name
-            // fakes have displayName "Object" — this check never triggers Proxy traps
+            // fakes have displayName "Object". This check never triggers Proxy traps.
             function findStore(storeName) {
                 for (const m of modules) {
                     try {
@@ -2017,7 +2017,7 @@
                 return undefined;
             }
 
-            // Discord's API client has .del (not .delete) — this distinguishes it
+            // Discord's API client has .del (not .delete), which distinguishes it
             // from generic HTTP wrappers. Also has get/post/put/patch as own props.
             function findAPI() {
                 for (const m of modules) {
@@ -2188,10 +2188,10 @@
                         }
 
                         // GAME/STREAM impersonate a specific application. Without a real id the
-                        // fake process is unidentifiable and Discord silently never counts it —
+                        // fake process is unidentifiable and Discord silently never counts it, so
                         // skip loudly instead of running a task that can't finish (issue #43).
                         if ((type === 'GAME' || type === 'STREAM') && !appId) {
-                            Logger.log(`[Quest] "${q.config?.messages?.questName ?? q.id}" has no application id in its config — can't spoof the game. Skipping.`, 'warn');
+                            Logger.log(`[Quest] "${q.config?.messages?.questName ?? q.id}" has no application id in its config, so the game cannot be spoofed. Skipping.`, 'warn');
                             Tasks.skipped.add(q.id);
                             return;
                         }
@@ -2288,7 +2288,7 @@
             }
         }
 
-        // Keep the UI alive if there are unclaimed rewards waiting — losing the
+        // Keep the UI alive if there are unclaimed rewards waiting. Losing the
         // dashboard the moment the queue finishes means users miss the CLAIM
         // buttons (especially when auto-claim is off). User can click STOP manually.
         const hasUnclaimed = [...Logger.tasks.values()].some(t => t.claimable && !t.removing);

@@ -1,5 +1,5 @@
 /*
- * OrionQuests — Vencord userplugin
+ * OrionQuests, a Vencord userplugin
  * Copyright (c) 2026 nyxxbit
  * SPDX-License-Identifier: MIT
  */
@@ -12,7 +12,7 @@ import { settings } from "./settings";
  * Debug output, gated by the verboseLogging setting.
  *
  * Vencord's Logger.debug always calls console.debug, and browsers hide that level
- * unless the console is switched to Verbose — so the setting had nothing to switch:
+ * unless the console is switched to Verbose, so the setting had nothing to switch:
  * every debug line was emitted either way, and whether you saw it depended on a
  * DevTools filter. With the setting on these go out at info level, where they show
  * by default; with it off the behaviour is unchanged.

@@ -1,9 +1,9 @@
 /*
- * OrionQuests — Vencord userplugin
+ * OrionQuests, a Vencord userplugin
  * Copyright (c) 2026 nyxxbit
  * SPDX-License-Identifier: MIT
  *
- * Plugin settings — exposed in Vencord's plugin settings UI.
+ * Plugin settings, exposed in Vencord's plugin settings UI.
  * Persisted via Vencord's DataStore.
  */
 
@@ -23,7 +23,7 @@ export const settings = definePluginSettings({
     achievementBypass: {
         type: OptionType.BOOLEAN,
         description:
-            "Auto-complete ACHIEVEMENT_IN_ACTIVITY quests by OAuth-authorizing the quest's app on your account (scopes: identify, applications.commands, applications.entitlements), reporting progress to the activity backend, then revoking the grant right after. This automates your logged-in account and can put the WHOLE account at risk under Discord's quest-automation enforcement. Off by default — turning it on is your explicit consent. Turning it on mid-run puts back any quest that was skipped only because it was off.",
+            "Auto-complete ACHIEVEMENT_IN_ACTIVITY quests by OAuth-authorizing the quest's app on your account (scopes: identify, applications.commands, applications.entitlements), reporting progress to the activity backend, then revoking the grant right after. This automates your logged-in account and can put the WHOLE account at risk under Discord's quest-automation enforcement. Off by default: turning it on is your explicit consent. Turning it on mid-run puts back any quest that was skipped only because it was off.",
         default: false,
         onChange: (value: boolean) => fireAchievementBypassChanged(value),
     },
@@ -31,21 +31,21 @@ export const settings = definePluginSettings({
     tryToClaimReward: {
         type: OptionType.BOOLEAN,
         description:
-            "Try to auto-claim rewards immediately on completion. May trigger a captcha — disable if you'd rather click CLAIM in Discord's Quests page manually.",
+            "Try to auto-claim rewards immediately on completion. May trigger a captcha, so disable it if you'd rather click CLAIM in Discord's Quests page manually.",
         default: false,
     },
 
     hideActivity: {
         type: OptionType.BOOLEAN,
         description:
-            "Suppress 'Playing ...' status from your friends list while game quests are running. Turns Discord's own 'Display current activity as a status message' off for the duration and restores it afterwards — the store spoof alone is what Discord builds the status from, so nothing less hides it. Takes effect immediately, including on a quest already in progress.",
+            "Suppress 'Playing ...' status from your friends list while game quests are running. Turns Discord's own 'Display current activity as a status message' off for the duration and restores it afterwards. The store spoof alone is what Discord builds the status from, so nothing less hides it. Takes effect immediately, including on a quest already in progress.",
         default: false,
     },
 
     gameConcurrency: {
         type: OptionType.SLIDER,
         description:
-            "Parallel game quests. Values above 1 risk detection — keep at 1 unless you know what you're doing. Read when a cycle starts, so a change applies to the next batch rather than to tasks already in flight.",
+            "Parallel game quests. Values above 1 risk detection, so keep it at 1 unless you know what you're doing. Read when a cycle starts, so a change applies to the next batch rather than to tasks already in flight.",
         markers: [1, 2, 3],
         stickToMarkers: true,
         default: 1,

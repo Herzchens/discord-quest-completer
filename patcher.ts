@@ -1,5 +1,5 @@
 /*
- * OrionQuests — Vencord userplugin
+ * OrionQuests, a Vencord userplugin
  * Copyright (c) 2026 nyxxbit
  * SPDX-License-Identifier: MIT
  *
@@ -12,7 +12,7 @@
  *
  * hideActivity note: skipping our own LOCAL_ACTIVITY_UPDATE dispatch is
  * NOT enough to hide the status. Discord derives the "Playing X" presence
- * from the store itself — LocalActivityStore/ActivityTrackingStore read
+ * from the store itself: LocalActivityStore/ActivityTrackingStore read
  * getVisibleRunningGames()/getVisibleGame(), which we patch below for
  * quest eligibility (issue #43). So the only way to stay invisible while
  * keeping the spoof is to turn off Discord's own status.showCurrentGame
@@ -31,15 +31,15 @@ const GAME_DISPATCH = "RUNNING_GAMES_CHANGE";
 const RPC_DISPATCH = "LOCAL_ACTIVITY_UPDATE";
 
 // Same user setting Vencord's GameActivityToggle drives. Resolved lazily on first
-// property access — which throws unless the plugin declares the UserSettingsAPI
+// property access, which throws unless the plugin declares the UserSettingsAPI
 // dependency (see index.tsx) and the setting still exists on this build.
 // `!` like Vencord's own GameActivityToggle: the proxy is always truthy, so a null check
-// buys nothing — a missing setting shows up as a throw on first access instead.
+// buys nothing: a missing setting shows up as a throw on first access instead.
 const ShowCurrentGame = getUserSettingLazy<boolean>("status", "showCurrentGame")!;
 
 // Overriding getRunningGames alone is no longer enough. Canary derives quest eligibility
 // from the "visible"/"candidate" views, and a game absent from those never gets a heartbeat
-// scheduled — the quest sits at 0% forever (issue #43). Older builds don't expose all of
+// scheduled, so the quest sits at 0% forever (issue #43). Older builds don't expose all of
 // these, so each is patched only if present.
 const PATCHED_METHODS = [
     "getRunningGames", "getGameForPID", "getVisibleGame",
@@ -50,7 +50,7 @@ export class Patcher {
     private games: FakeGame[] = [];
     private real: Record<string, any> = {};
     private active = false;
-    /** Read live — the user can flip the setting while the engine is running. */
+    /** Read live, since the user can flip the setting while the engine is running. */
     private hideActivity: () => boolean;
     /** Value of status.showCurrentGame before we forced it off; null = not suppressed. */
     private savedShowCurrentGame: boolean | null = null;
@@ -64,7 +64,7 @@ export class Patcher {
             if (typeof stores.RunStore[name] === "function") this.real[name] = stores.RunStore[name];
         }
         const absent = PATCHED_METHODS.filter(n => !this.real[n]);
-        if (absent.length) debug(logger, `[Patcher] Store lacks ${absent.join(", ")} — not patching those.`);
+        if (absent.length) debug(logger, `[Patcher] Store lacks ${absent.join(", ")}, not patching those.`);
     }
 
     private toggle(on: boolean): void {
@@ -76,7 +76,7 @@ export class Patcher {
             S.getGameForPID = (pid: number) =>
                 this.games.find(g => g.pid === pid) || real.getGameForPID.call(S, pid);
 
-            // our game wins as "the" visible one — that's the whole point of the spoof
+            // our game wins as "the" visible one, which is the whole point of the spoof
             if (real.getVisibleGame) S.getVisibleGame = () => this.games[0] ?? real.getVisibleGame.call(S);
             if (real.getVisibleRunningGames) S.getVisibleRunningGames = () => [...real.getVisibleRunningGames.call(S), ...this.games];
             if (real.getCandidateGames) S.getCandidateGames = () => [...real.getCandidateGames.call(S), ...this.games];
@@ -84,7 +84,7 @@ export class Patcher {
                 S.getRunningDiscordApplicationIds = () => {
                     const ids = real.getRunningDiscordApplicationIds.call(S);
                     const ours = this.games.map(g => String(g.id));
-                    // shape varies by build — preserve whichever collection came back
+                    // shape varies by build, so preserve whichever collection came back
                     return ids instanceof Set ? new Set([...ids, ...ours]) : [...(ids ?? []), ...ours];
                 };
             }
@@ -98,14 +98,14 @@ export class Patcher {
     /**
      * Force status.showCurrentGame off while a fake game is up and hideActivity is on,
      * restore it once the last one goes away. Called on every add/remove, and directly by
-     * the engine when the setting itself changes — waiting for the next add/remove meant a
+     * the engine when the setting itself changes. Waiting for the next add/remove meant a
      * toggle during a game quest did nothing for up to 25 minutes, which reads as broken.
      * Idempotent: the savedShowCurrentGame guard makes a repeat call a no-op.
      */
     syncPresenceSuppression(): void {
         const shouldSuppress = this.hideActivity() && this.games.length > 0;
 
-        // ShowCurrentGame is a lazy proxy, so it's always truthy — the throw only
+        // ShowCurrentGame is a lazy proxy, so it's always truthy. The throw only
         // surfaces on first property access (missing setting, or the UserSettingsAPI
         // dependency not enabled). Hence try/catch rather than a null check.
         if (shouldSuppress && this.savedShowCurrentGame === null) {
@@ -113,11 +113,11 @@ export class Patcher {
                 this.savedShowCurrentGame = ShowCurrentGame.getSetting();
                 if (this.savedShowCurrentGame) {
                     ShowCurrentGame.updateSetting(false)
-                        .catch((e: any) => logger.warn(`[Patcher] Could not turn showCurrentGame off — activity stays visible: ${e?.message}`));
+                        .catch((e: any) => logger.warn(`[Patcher] Could not turn showCurrentGame off, activity stays visible: ${e?.message}`));
                 }
             } catch (e: any) {
                 this.savedShowCurrentGame = null;
-                logger.warn(`[Patcher] status.showCurrentGame unavailable — cannot hide activity: ${e?.message}`);
+                logger.warn(`[Patcher] status.showCurrentGame unavailable, cannot hide activity: ${e?.message}`);
             }
         } else if (!shouldSuppress && this.savedShowCurrentGame !== null) {
             const restore = this.savedShowCurrentGame;
@@ -125,9 +125,9 @@ export class Patcher {
             if (restore) {
                 try {
                     ShowCurrentGame.updateSetting(true)
-                        .catch((e: any) => logger.error("[Patcher] Failed to restore showCurrentGame — re-enable 'Display current activity as a status message' in Discord settings:", e));
+                        .catch((e: any) => logger.error("[Patcher] Failed to restore showCurrentGame. Re-enable 'Display current activity as a status message' in Discord settings:", e));
                 } catch (e: any) {
-                    logger.error("[Patcher] Failed to restore showCurrentGame — re-enable 'Display current activity as a status message' in Discord settings:", e);
+                    logger.error("[Patcher] Failed to restore showCurrentGame. Re-enable 'Display current activity as a status message' in Discord settings:", e);
                 }
             }
         }

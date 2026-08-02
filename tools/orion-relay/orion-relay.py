@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Orion Relay — tiny localhost HTTP relay for the userscript ACHIEVEMENT bypass.
+"""Orion Relay: a small localhost HTTP relay for the userscript ACHIEVEMENT bypass.
 
 Discord's renderer CSP allows connect-src to http://127.0.0.1:* but blocks
 *.discordsays.com directly. This listens on 127.0.0.1:43210 and forwards POSTs
@@ -8,7 +8,7 @@ Vencord / BetterDiscord / any client mod.
 
 Run:  python3 orion-relay.py    (Ctrl+C to stop)
 
-Python port of orion-relay.ps1 — same wire protocol, same security posture.
+Python port of orion-relay.ps1, with the same wire protocol and security posture.
 """
 import json
 import re
@@ -93,7 +93,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             length = int(self.headers.get('Content-Length') or 0)
-            # Cap inbound body — bypass payloads are tiny; a huge body would be a trivial local DoS.
+            # Cap inbound body. Bypass payloads are tiny, and a huge body would be a trivial local DoS.
             if length > MAX_BODY:
                 return self._send(413, '{"ok":false,"status":0,"body":"payload too large"}', origin)
             payload = json.loads(self.rfile.read(length).decode('utf-8'))
