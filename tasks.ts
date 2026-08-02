@@ -90,18 +90,31 @@ export class TaskRunner {
         return entry?.value ?? userStatus?.streamProgressSeconds ?? 0;
     }
 
-    /** Detect task type from quest config. Order matters: ACHIEVEMENT_IN_ACTIVITY before generic ACTIVITY. */
+    /**
+     * Detect task type from quest config.
+     *
+     * The exact keys come first and the loose prefixes last, and that order is the whole
+     * point. This used to test `k.includes("PLAY")` before anything else, and
+     * "PLAY_ACTIVITY".includes("PLAY") is true, so every activity quest was routed to the GAME
+     * handler: it injected a fake process and then waited for heartbeats Discord does not send
+     * for an activity task, so the quest never finished and the ACTIVITY handler was
+     * unreachable for its own quest type. Verified against a live client.
+     *
+     * The prefix entries still catch platform variants (PLAY_ON_XBOX, WATCH_VIDEO_ON_MOBILE)
+     * and anything new Discord adds under the same families.
+     */
     detectType(cfg: any, applicationId?: string): DetectedTask | null {
         const taskKeys = Object.keys(cfg.tasks);
-        const typeMap: Array<{ key: string; type: TaskType; }> = [
-            { key: "PLAY", type: "GAME" },
-            { key: "STREAM", type: "STREAM" },
-            { key: "VIDEO", type: "WATCH_VIDEO" },
-            { key: "ACHIEVEMENT_IN_ACTIVITY", type: "ACHIEVEMENT" },
-            { key: "ACTIVITY", type: "ACTIVITY" },
+        const typeMap: Array<{ match: (k: string) => boolean; type: TaskType; }> = [
+            { match: k => k === "ACHIEVEMENT_IN_ACTIVITY", type: "ACHIEVEMENT" },
+            { match: k => k === "PLAY_ACTIVITY", type: "ACTIVITY" },
+            { match: k => k.startsWith("STREAM"), type: "STREAM" },
+            { match: k => k.includes("VIDEO"), type: "WATCH_VIDEO" },
+            { match: k => k.startsWith("PLAY"), type: "GAME" },
+            { match: k => k.includes("ACTIVITY"), type: "ACTIVITY" },
         ];
-        for (const { key, type } of typeMap) {
-            const keyName = taskKeys.find(k => k.includes(key));
+        for (const { match, type } of typeMap) {
+            const keyName = taskKeys.find(match);
             if (keyName) {
                 return {
                     type, keyName,
