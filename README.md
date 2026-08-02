@@ -1,67 +1,45 @@
-<div align="center">
-
 # Orion
 
-**Auto-complete every Discord Quest in seconds** &mdash; v4.9.8
-
-[![Version](https://img.shields.io/badge/v4.9.8-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer)
+[![Version](https://img.shields.io/badge/v4.9.8-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
-Completes all Discord Quests automatically &mdash; game, video, stream, activity, and achievement quests. Paste one script into DevTools, get every reward. No installs, no tokens, no dependencies.
+Completes Discord Quests without playing them. It reads the quests you're eligible for, tells Discord you're doing the thing the quest asks for, and waits for Discord to credit the progress.
 
-**Works on every Discord update** &mdash; no hardcoded paths, uses `constructor.displayName` for resilient module detection.
+It handles all five quest types: play a game, stream a game, watch a video, join an activity, and earn an achievement inside an activity. That last one is the reason this project exists, and none of the other tools listed at the bottom of this page do it.
 
-[Get Started](#quick-start) &bull; [How It Works](#how-it-works) &bull; [Configuration](#configuration)
-
-</div>
-
----
+Two ways to run it. A single userscript you paste into DevTools, or a Vencord plugin that starts with Discord. Same engine, kept in sync, in this repo.
 
 > [!CAUTION]
-> **Discord is actively cracking down on quest automation (April 2026+).** Some users have received system messages flagging their accounts after running automation tools (any tool, not just this one). The risk is real now, and enforcement can hit the entire Discord account, not only quest rewards. Use at your own discretion. Honest trade-off: faster Orbs vs a non-zero chance of an account strike.
+> **Discord has been enforcing against quest automation since April 2026.** People have had system messages land on their account after running automation, any automation, not only this. Enforcement can hit the whole account and not just the quest reward. That is the trade you are making.
 >
-> **The `ACHIEVEMENT_IN_ACTIVITY` bypass does more than spoof progress.** To complete those quests it runs a real OAuth2 authorization against the quest's application (scopes `identify applications.commands applications.entitlements`), mints a proxy ticket, posts forged progress to the activity backend at `discordsays.com`, then revokes the authorization it created. Full flow: `authorize -> proxy ticket -> discordsays authorize -> discordsays progress -> revoke`. It is forging quest progress on a logged-in account, which is exactly what Discord is enforcing against. If you don't want that on your main account, don't run it there. Orion asks for explicit confirmation before each app authorization (the userscript shows a popup; the Vencord plugin keeps it behind an off-by-default setting), and the only data sent to `discordsays.com` is that app's OAuth code, the proxy ticket, and the target progress count &mdash; never your Discord token, email, or password.
+> **The achievement bypass is the riskiest part of this tool, by a distance.** To complete an `ACHIEVEMENT_IN_ACTIVITY` quest it runs a real OAuth2 authorization against the quest's application on your account (scopes `identify applications.commands applications.entitlements`), mints a proxy ticket, posts forged progress to the activity backend on `discordsays.com`, then revokes the grant it created. That is forging progress with your logged-in account, which is precisely the behaviour being enforced against. It asks before every authorization: the userscript shows a confirm dialog, the plugin keeps it behind a setting that is off until you turn it on. What goes to `discordsays.com` is the app's OAuth code, the proxy ticket, and a progress number. Never your token, email, or password. If you would mind losing the account, don't run this on it.
 
----
+## Which download you want
 
-> [!WARNING]
-> **Vanilla Discord Stable is partially incompatible.** A recent Stable build changed the webpack runtime so `webpackChunkdiscord_app.push` no longer exposes the live module cache post-boot.
->
-> **Workarounds (any of these works on Stable):**
-> 1. **Paste the userscript with [Vencord](https://vencord.dev/) installed** &mdash; Orion v4.6+ auto-detects Vencord and uses its boot-time-injected Webpack API to restore full functionality.
-> 2. **Install the [OrionQuests Vencord userplugin](docs/VENCORD-PLUGIN.md)** &mdash; no console pasting, runs at Discord boot, exposes `/orion start|stop|status` slash commands. Best long-term option for Stable users. If you use nin0's `UserpluginInstaller`, paste `https://github.com/nyxxbit/discord-quest-completer` into its **Install Plugin** field and it installs and self-updates from there.
-> 3. Or use **[Discord Canary](https://canary.discord.com/download)** (vanilla, no mods), where the native userscript extraction still works.
+The [latest release](https://github.com/nyxxbit/discord-quest-completer/releases/latest) ships four files and most people need one or two of them.
 
----
+| File | What it is | Who it's for |
+|---|---|---|
+| `index.js` | The userscript. Paste into DevTools, no install. | Anyone comfortable opening the console. Needs Vencord on Discord Stable, see below. |
+| `orion-relay-vX.zip` | A small localhost HTTP listener on `127.0.0.1:43210`. PowerShell and Python versions. | Only if you want achievement quests **and** you're using the userscript without the plugin. Explained under [Achievement quests](#achievement-quests). |
+| `orion-vencord-bundle-vX.zip` | Copies a prebuilt Vencord over an existing Vencord install. `INSTALL.cmd`, no build tools. | Someone non-technical who already has Vencord and wants this working in one double-click. Freezes their Vencord version, see the note below. |
+| `orion-devbuild-installer-vX.zip` | Builds Vencord from source with the plugin in it, as a real git clone. | Same person, but they want Vencord to keep auto-updating. Takes 5 to 15 minutes and downloads roughly 300 MB. Pulls Node 22 and Git via winget if missing. |
 
-## Why Orion?
+The two installers exist because copying a prebuilt Vencord over someone's install has to disable Vencord's updater to be safe. `orion-vencord-bundle` accepts that and freezes the version. `orion-devbuild-installer` avoids it by building from a git checkout, so Vencord updates itself normally and the plugin is recompiled back in each time. Both are Windows only and both include a README.
 
-- **Covers all 5 quest types** &mdash; PLAY, STREAM, VIDEO, ACTIVITY, and ACHIEVEMENT_IN_ACTIVITY. Most other tools only handle PLAY (game-time) quests.
-- **Userscript and Vencord plugin in one repo** &mdash; pick whichever fits your setup. Both share the same engine, both kept in sync.
-- **Auto-claiming** &mdash; Claim rewards directly from the dashboard. Tries to claim automatically (if enabled), or provides a smart interactive button if captcha is needed.
-- **Resilient module loader** &mdash; finds Discord stores by class name, not minified paths. Dual extraction path (Vencord API + native fallback) survives Discord webpack changes.
-- **Smart rate limiting** &mdash; exponential backoff on 429/5xx, skip-list for dead quests, randomized polling intervals. Distinguishes between global and endpoint limits, non-blocking retries.
-- **Fault-tolerant execution** &mdash; One failed quest won't break the queue (`Promise.allSettled`).
-- **Zero setup** &mdash; single paste into the console. No Node.js, no npm, no extensions.
+If you already build Vencord yourself, skip the installers and see [`docs/VENCORD-PLUGIN.md`](docs/VENCORD-PLUGIN.md). With nin0's `UserpluginInstaller`, paste this repo's URL into its Install Plugin field and it clones, builds, and self-updates from there.
 
----
+## Quick start, userscript
 
-## Quick start
+1. Open Discord. [Canary](https://canary.discord.com/download) has the console enabled already.
+2. `Ctrl + Shift + I`, Console tab.
+3. Paste [`index.js`](index.js) and press Enter.
 
-> [!IMPORTANT]
-> **Partial Browser/Mobile Support.** Orion runs in Discord web version or on mobile browsers Discord (via script-injection extensions like Kiwi Browser) for web-compatible quests (e.g., Video, Activity). However, `GAME` and `STREAM` quests are automatically filtered out as they are **impossible** outside the Discord Desktop client.
-
-**1.** Open Discord ([Canary](https://canary.discord.com/download) recommended &mdash; console enabled by default)
-
-**2.** Press `Ctrl + Shift + I` &rarr; Console tab
-
-**3.** Paste [`index.js`](index.js) and hit Enter
-
-> `Shift + .` toggles the dashboard. Click **STOP** to kill it instantly.
+A quest picker appears. Choose what to run and hit start. `Shift + .` hides and shows the dashboard, and STOP ends the run and undoes everything it patched.
 
 <details>
-<summary>Enable console on stable Discord</summary>
+<summary>Enabling the console on Discord Stable</summary>
 
 Close Discord, edit `%appdata%/discord/settings.json`:
 
@@ -72,131 +50,91 @@ Close Discord, edit `%appdata%/discord/settings.json`:
 Restart Discord.
 </details>
 
----
+## What it does per quest type
 
-## How it works
+Orion reads Discord's own webpack stores and drives Discord's own authenticated API client. It does not talk to any server of ours; there isn't one.
 
-Orion extracts Discord's internal webpack stores (`QuestStore`, `RunStore`, `Dispatcher`, etc.) and uses them to spoof game processes, send fake video progress, and dispatch heartbeat signals &mdash; all through Discord's own authenticated API client.
+| Quest task | How it's completed |
+|---|---|
+| `PLAY_ON_DESKTOP` | Injects a fake running process into `RunningGameStore`, built from the app's real metadata. Discord then sends the quest heartbeats itself and Orion reads the progress off the replies. |
+| `STREAM_ON_DESKTOP` | Same idea, plus a spoofed `getStreamerActiveStreamMetadata` so Discord believes a stream is live. |
+| `WATCH_VIDEO`, `WATCH_VIDEO_ON_MOBILE` | Posts video progress timestamps on a randomized interval, with the fractional values a real player would send. |
+| `PLAY_ACTIVITY` | Heartbeats against a voice channel stream key. |
+| `ACHIEVEMENT_IN_ACTIVITY` | Tries the heartbeat first. Discord rejects those with a 403, because the activity backend validates them rather than the client, so it falls back to the OAuth path described below. |
 
-```
-QuestStore → filter incomplete → JIT enroll → dispatch tasks → poll progress → auto-claim → done
-```
+Where the quest's application id lives moved in July 2026, from `config.application.id` to per task at `config.taskConfigV2.tasks.<KEY>.applications[0].id`. Reading the old path fails silently rather than loudly, which is what broke every tool in this space at once. See [#43](https://github.com/nyxxbit/discord-quest-completer/issues/43).
 
-| Quest type | What Orion does |
-|------------|----------------|
-| **Video** | Sends fake `video-progress` timestamps with natural 7-9.5s polling intervals and precise float payloads |
-| **Game** | Injects a spoofed process into `RunStore` with real metadata from Discord's app registry |
-| **Stream** | Patches `StreamStore.getStreamerActiveStreamMetadata` with synthetic stream data |
-| **Activity** | Heartbeats against a voice channel to simulate participation |
-| **Achievement** | Tries heartbeat spoof first; if Discord rejects, forges the Discord Says OAuth handshake to mark progress directly. The discordsays POSTs auto-route through the best available transport: [Orion Relay](tools/orion-relay/) (zero client mods needed), [Vencord plugin](docs/VENCORD-PLUGIN.md) if installed, or direct `fetch` on web Discord. Skips cleanly on age-gated/delisted activities |
+## Achievement quests
 
----
+These can't be faked client side, so completing one means authorizing the quest's app on your account and reporting progress to `discordsays.com` directly. Read the caution at the top before using it.
 
-## Dashboard
+Discord's renderer blocks requests to `discordsays.com` outright via CSP, so the request has to leave the renderer. Orion tries, in order:
 
-Draggable overlay styled to match native Discord design. Live-sorts tasks so you always see what matters:
+1. The localhost relay on `127.0.0.1:43210`, if it's running. Discord's CSP allows loopback, so this works with no client mod at all.
+2. The Vencord plugin's native module, which runs the request in Electron's main process where CSP doesn't apply.
+3. A direct `fetch`, which only works on Discord in a browser.
 
-| Priority | State | Visual |
-|----------|-------|--------|
-| 1st | **Running** (highest progress first) | Blue accent, circular progress bar |
-| 2nd | **Queued** | Orange accent, dimmed |
-| 3rd | **Completed** / **Action Required** | Green checkmark + Interactive CLAIM or ACTION REQUIRED buttons |
+So on desktop you need either the relay or the plugin. There is no renderer-only way around this; that was tested to exhaustion.
 
-Desktop notifications fire on each quest completion.
+Quests for age-gated or delisted activities are skipped instead of retried. Discord answers `/proxy-tickets` with a 403 and code `50165` for those, and they can't be launched by hand either until you age-verify.
 
----
+## Settings
 
-## Auto & In-UI Claiming
+The userscript asks at start, in the picker: which quests to run, filters by reward type (Orbs, Avatar Decoration, In-Game, Other), auto-enroll (on), auto-claim (off, because claiming often triggers a captcha), a completion sound (off), and randomized idle gaps between quests (off).
 
-You can configure Orion's claiming behavior via the `TRY_TO_CLAIM_REWARD` setting.
-
-- **Automated Claiming:** If enabled, tries to claim instantly upon completion.
-- **In-UI Button:** If auto-claim fails due to captcha, or is disabled, a **CLAIM REWARD** button appears directly on the task card.
-
----
-
-## Configuration
-
-Most settings are now configurable through the **quest picker UI** that appears before the script starts:
-
-- **Reward filters** &mdash; Toggle quests by reward type (Orbs, Avatar Decorations, In-Game Items)
-- **Quest checkboxes** &mdash; Select/deselect individual quests
-- **Auto-enroll** &mdash; Automatically accept quests before running them (default: ON)
-- **Auto-claim** &mdash; Attempt to claim rewards on completion (default: OFF to avoid captcha)
-
-Advanced settings can still be tweaked in the `CONFIG` object before pasting:
+Two things are edited in the `CONFIG` object at the top of `index.js` instead:
 
 ```js
 const CONFIG = {
-    HIDE_ACTIVITY: false,        // hide "Playing..." from friends list. Turns Discord's own
-                                 // "Display current activity as a status message" off while
-                                 // quests run and restores it afterwards
-
-    MAX_LOG_ITEMS: 60,           // UI log limit
+    HIDE_ACTIVITY: false,   // turn Discord's "Display current activity as a status
+                            // message" off while quests run, and restore it after
+    MAX_LOG_ITEMS: 60,      // lines kept in the dashboard log
 };
 ```
 
----
+The plugin has the same options as real settings, plus auto-start, per-type concurrency, and the achievement bypass toggle. They're documented in [`docs/VENCORD-PLUGIN.md`](docs/VENCORD-PLUGIN.md).
 
-## Error handling
+## When things go wrong
 
-| Scenario | Behavior |
-|----------|----------|
-| **429 / 5xx** | Exponential backoff, re-queued up to `MAX_RETRIES`, distinguishes global vs endpoint limits |
-| **404 on enroll** | Quest added to skip-list, script continues |
-| **Repeated failures** | Task abandoned after `MAX_TASK_FAILURES` consecutive errors |
-| **25 min timeout** | Task force-stopped, cycle advances |
-| **Missing modules** | Required modules validated on boot; optional ones log a warning |
-| **Claim fails** | Falls back to CLAIM button in dashboard |
-| **Fatal crash** | Unconditionally releases `window.orionLock` so the script can be re-run without refreshing |
+| Situation | What happens |
+|---|---|
+| 429 or 5xx | Exponential backoff and re-queue, up to 3 retries. Global and per-endpoint limits are tracked separately. |
+| 404 or 403 on enroll | Quest goes on a skip list and the run continues. |
+| 5 consecutive failures on one task | That task is abandoned, the rest keep going. |
+| A game quest gets no heartbeat for 90s | Aborted with a reason, instead of sitting there until the timeout. |
+| 25 minutes on one task | Hard stop, next quest. |
+| Auto-claim fails | A CLAIM button appears on the task card. |
+| A crash | The re-entry lock is released and every patch is reverted, so you can paste again without reloading. |
 
----
+Stopping is meant to leave nothing behind. The patched store methods are restored, the fake process is removed, the OAuth grant from an achievement quest is revoked, and any Discord setting it changed is put back.
+
+## Compatibility
+
+Vanilla Discord **Stable** is only partly usable. A Stable build changed the webpack runtime so `webpackChunkdiscord_app.push` stopped exposing the live module cache after boot, which the userscript needs ([#20](https://github.com/nyxxbit/discord-quest-completer/issues/20)). Three ways around it: run the userscript with Vencord installed and it uses Vencord's Webpack API instead, install the plugin, or use Canary or PTB where the native path still works.
+
+In a browser or on mobile through a script-injection extension, video and activity quests work. Game and stream quests are filtered out, because they require the desktop client to exist at all.
 
 ## Architecture
 
-Single-file IIFE. No build tools, no external deps.
+`index.js` is one IIFE with no build step and no dependencies. The plugin is TypeScript at the repo root, because Vencord's `UserpluginInstaller` clones a repo straight into `src/userplugins` and only reads `index.tsx` and `native.ts` from its top level.
 
-```
-index.js
-├─ CONFIG / SYS / RUNTIME      tunables, frozen system limits, active cleanups
-├─ ErrorHandler                classifies HTTP errors (retry / skip / fatal)
-├─ Logger                      DOM dashboard + task state + log output
-├─ Traffic                     FIFO request queue with exponential backoff
-├─ Patcher                     RunStore / StreamStore monkey-patching
-├─ Tasks                       VIDEO, GAME, STREAM, ACTIVITY, ACHIEVEMENT handlers
-├─ loadModules()               dual-path extraction (Vencord API + native fallback)
-└─ main()                      discover → JIT enroll → execute → claim → loop
-```
+Stores are found by class name (`constructor.displayName`), the Dispatcher by its shape, and the API client by having a `.del` method, so nothing depends on minified paths that change every build. That handles Discord renaming things. It does not handle Discord *moving* things, which is what #43 was.
 
-### Module detection
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the full internal tour.
 
-Unlike other scripts that break on every Discord update, Orion finds stores by their **class name** (`QuestStore`, `RunningGameStore`, etc.) via `constructor.displayName`. The Dispatcher is found by structural signature (`_subscriptions` + `subscribe` + `dispatch`), and the API client by its unique `.del` method. No hardcoded minified paths.
+## Other tools
 
-For a full internal tour of the script, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Worth knowing about, and worth knowing their state. All three were last updated before the July 2026 change described above, and none has shipped since.
 
----
+- [markterence/discord-quest-completer](https://github.com/markterence/discord-quest-completer), a native Windows app that creates dummy executables so Discord's process detection sees a game, without touching the client. Structurally the most durable approach of the four, since it doesn't read Discord internals. Play quests only, Windows only. Last updated March 2026.
+- [nicola02nb/completeDiscordQuest](https://github.com/nicola02nb/completeDiscordQuest), a Vencord plugin descended from [aamiaa's original snippet](https://gist.github.com/aamiaa/204cd9d42013ded9faf646fae7f89fbb) that started this whole space. Covers everything except achievement quests. Last updated April 2026 and currently broken by the application id change, tracked in its own issue #23.
+- [nvckai/Discord-Web-Auto-Quest-Extension](https://github.com/nvckai/Discord-Web-Auto-Quest-Extension), a Chrome extension, easiest to install, video quests. Last updated April 2026.
 
-## Alternatives
-
-Orion isn't the only tool in this space. If our approach doesn't fit your setup, these projects might:
-
-- **[markterence/discord-quest-completer](https://github.com/markterence/discord-quest-completer)** &mdash; Native Windows app (Tauri/Rust + Vue). Creates dummy game executables that satisfy Discord's process detection without injecting into the client at all. **Most resilient long-term** because it doesn't depend on Discord internals. Trade-off: **PLAY quests only** (no VIDEO/STREAM/ACTIVITY/ACHIEVEMENT support), Windows-only, requires WebView2.
-- **[nicola02nb/completeDiscordQuest](https://github.com/nicola02nb/completeDiscordQuest)** &mdash; Vencord plugin (also a BetterDiscord port available). Smaller and simpler than ours, port of [aamiaa's original snippet](https://gist.github.com/aamiaa/204cd9d42013ded9faf646fae7f89fbb) that started this whole space. Mature (online since Sep 2025).
-- **[nvckai/Discord-Web-Auto-Quest-Extension](https://github.com/nvckai/Discord-Web-Auto-Quest-Extension)** &mdash; Chrome extension. One-click install but VIDEO-focused.
-
-Why Orion if these exist:
-
-- We're the **only** tool covering all 5 quest types with one codebase.
-- Userscript + Vencord plugin **share the same engine** in this repo, so behavior matches across install paths.
-- Active development (multiple releases per month, community PRs merged on the same day they land).
-
-Honest disclosure: we depend on Discord's webpack/internals. Every Discord update has a chance of breaking us. markterence's process-injection approach is structurally less brittle for users who only need PLAY quests.
-
----
+Being the one that still works today is a function of being maintained, not of being cleverer. This approach reads Discord's internals, so any Discord update can break it, and one did. The dummy-executable approach doesn't have that failure mode.
 
 ## Contributing
 
-Contributions are welcome &mdash; bug reports, PRs, and docs. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) for the checklist and code style. Use the issue templates when reporting bugs or requesting features.
+Bug reports, PRs and docs all welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the checklist and the code style, and there are issue templates for bugs and feature requests. If you're reporting a bug, the Discord build number from the very bottom of Discord's settings saves a round trip.
 
 ---
 
