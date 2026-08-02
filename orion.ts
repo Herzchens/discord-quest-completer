@@ -134,8 +134,27 @@ function removeEntry(id: string): void {
     emitDashboard();
 }
 
+let questStore: any = null;
+
+/**
+ * QuestStore, resolved independently of the engine's lifetime. The enrollment watcher in
+ * index.tsx needs the store while the engine is down, and the display name has been both
+ * "QuestStore" and "QuestsStore" across builds, so the fallback lives in one place instead
+ * of being copied into every caller. Resolved on first use, not at module load: findStore
+ * walks the webpack cache, which is not populated when the plugin module is evaluated.
+ */
+export function getQuestStore(): any {
+    if (!questStore) questStore = findStore("QuestStore") || findStore("QuestsStore");
+    return questStore;
+}
+
+/** Current quest list, for callers that only want to read it (the watcher). */
+export function listQuests(): Quest[] {
+    return getQuestsArray(getQuestStore());
+}
+
 function loadStores(): Stores {
-    const QuestStore = findStore("QuestStore") || findStore("QuestsStore");
+    const QuestStore = getQuestStore();
     const RunStore = findStore("RunningGameStore");
     const StreamStore = findStore("ApplicationStreamingStore");
     const ChanStore = findStore("ChannelStore");

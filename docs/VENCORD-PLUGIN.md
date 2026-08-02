@@ -93,6 +93,7 @@ Exposed in Vencord's plugin settings UI. Persisted via Vencord's `DataStore`.
 | --- | --- | --- |
 | Auto Start | `false` | (none, the userscript starts on paste) |
 | Auto-enroll | `true` | `RUNTIME.autoEnroll` (picker toggle). Off leaves quests you have not accepted untouched and lists them as `PENDING` until you accept them in Discord. |
+| Watch for enrollments | `false` | (none, the userscript is a paste-and-run session with nothing idle to watch). Subscribes to `QuestStore` while the engine is idle and starts it when a quest gains `enrolledAt`. Owned by `index.tsx` rather than the engine: armed by plugin load and `/orion start`, disarmed by `/orion stop` and by disabling the plugin, left armed when a queue drains on its own. |
 | Try achievement bypass | `false` | `Consent.ask()` popup. **This is the account-risk setting.** Off means `ACHIEVEMENT_IN_ACTIVITY` quests are skipped rather than completed. Turning it on is your consent to OAuth-authorize each quest's app on your account. Read the caution in the [README](../README.md) first. |
 | Try to claim reward | `false` | `RUNTIME.autoClaim` (picker toggle) |
 | Hide activity | `false` | `CONFIG.HIDE_ACTIVITY`. Both turn Discord's own `status.showCurrentGame` off while quests run and restore it on stop. Needs `UserSettingsAPI`, which the plugin declares as a dependency. |
