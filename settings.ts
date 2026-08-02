@@ -20,6 +20,13 @@ export const settings = definePluginSettings({
         default: false,
     },
 
+    autoEnroll: {
+        type: OptionType.BOOLEAN,
+        description:
+            "Accept quests for you before running them. Turn it off to run only the quests you accepted yourself in Discord's Quests page: anything you haven't accepted is left untouched and listed as PENDING in /orion status, and it starts on the next cycle the moment you accept it, without restarting the engine.",
+        default: true,
+    },
+
     achievementBypass: {
         type: OptionType.BOOLEAN,
         description:
