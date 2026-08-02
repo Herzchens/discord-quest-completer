@@ -10,7 +10,7 @@
 import { definePluginSettings } from "@api/Settings";
 import { OptionType } from "@utils/types";
 
-import { fireAchievementBypassChanged } from "./hooks";
+import { fireAchievementBypassChanged, fireWatchForEnrollmentsChanged } from "./hooks";
 
 export const settings = definePluginSettings({
     autoStart: {
@@ -25,6 +25,14 @@ export const settings = definePluginSettings({
         description:
             "Accept quests for you before running them. Turn it off to run only the quests you accepted yourself in Discord's Quests page: anything you haven't accepted is left untouched and listed as PENDING in /orion status, and it starts on the next cycle the moment you accept it, without restarting the engine.",
         default: true,
+    },
+
+    watchForEnrollments: {
+        type: OptionType.BOOLEAN,
+        description:
+            "Watch Discord's quest list while the engine is idle and start it on its own when you accept a quest, instead of you running /orion start. The engine can then start while you are away from the keyboard, which is a change in exposure under Discord's quest-automation enforcement rather than only a convenience: turning it on is your explicit consent to that. /orion stop disarms the watcher until the next /orion start, and disabling the plugin removes it entirely. Note it does not narrow what a run picks up: with auto-enroll also on, accepting one quest wakes the engine and it then enrolls you in every other available quest, so pair this with auto-enroll off if you want only the quests you accepted yourself.",
+        default: false,
+        onChange: (value: boolean) => fireWatchForEnrollmentsChanged(value),
     },
 
     achievementBypass: {

@@ -27,3 +27,17 @@ export function setAchievementBypassHook(fn: Handler<boolean> | null): void {
 export function fireAchievementBypassChanged(value: boolean): void {
     onAchievementBypass?.(value);
 }
+
+let onWatchForEnrollments: Handler<boolean> | null = null;
+
+/**
+ * Registered by index.tsx rather than the engine: the watcher outlives a run by design, so
+ * turning the setting off has to reach it even when nothing is running.
+ */
+export function setWatchForEnrollmentsHook(fn: Handler<boolean> | null): void {
+    onWatchForEnrollments = fn;
+}
+
+export function fireWatchForEnrollmentsChanged(value: boolean): void {
+    onWatchForEnrollments?.(value);
+}

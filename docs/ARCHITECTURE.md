@@ -173,6 +173,8 @@ All already in code, not proposals:
 
 A functional port, in sync with the userscript. It replaces manual webpack walking with `findStore`/`findByProps`, uses Vencord's settings instead of `CONFIG`, performs the CSP-exempt POSTs in `native.ts`, and exposes `/orion start|stop|status`. See `docs/VENCORD-PLUGIN.md`.
 
+The optional enrollment watcher (`watchForEnrollments`, off by default) lives in `index.tsx`, not in the engine: `startOrion`'s teardown runs whenever the queue drains, so a watcher inside that lifecycle would stop watching the moment it succeeded. Its lifetime is the plugin's instead &mdash; armed by plugin load and `/orion start`, disarmed by `/orion stop` and by the plugin being disabled.
+
 ### Why the plugin sources live at the repo root
 
 Vencord's build enumerates only the direct children of `src/userplugins` (`globPlugins` / `globNativesPlugin` in `scripts/build/build.mjs` + `scripts/build/common.mjs`): the plugin entry must be `index.ts`/`index.tsx` at the top level of the plugin folder, and native IPC must be `native.ts` (or `native/index.ts`) beside it. Nested subdirectories are never scanned. nin0's `UserpluginInstaller` runs a plain `git clone <repo>` into `src/userplugins`, so the clone root *is* the plugin folder, which means the plugin has to be the repo root for one-click install and in-app updates (`git fetch` + `git rebase origin/HEAD`) to work.

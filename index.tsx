@@ -10,14 +10,92 @@
 import { ApplicationCommandInputType, ApplicationCommandOptionType, sendBotMessage } from "@api/Commands";
 import definePlugin from "@utils/types";
 
-import { isEngineRunning, readDashboard, startOrion, stopOrion } from "./orion";
+import { setWatchForEnrollmentsHook } from "./hooks";
+import { getQuestStore, isEngineRunning, listQuests, readDashboard, startOrion, stopOrion } from "./orion";
 import { repairSuppressedPresence } from "./patcher";
 import { settings } from "./settings";
+
+/*
+ * Enrollment watcher.
+ *
+ * Owned here, not in orion.ts, and that is the whole design. The engine tears itself down
+ * whenever the queue drains (startOrion's finally calls stopOrion), so a watcher living
+ * inside that lifecycle would switch itself off the moment it succeeded, and a "was this a
+ * real stop" flag on stopOrion would leave every future caller to get that right. Here the
+ * lifetime is structural: the watcher exists while the plugin is enabled, and nothing else
+ * can take it down by accident.
+ *
+ * Armed by /orion start and by plugin load, disarmed by /orion stop and by the plugin being
+ * disabled. A queue that drains on its own leaves it armed, an explicit stop does not: stop
+ * is the user's "quit doing things" button, and an engine that restarts itself after being
+ * told to stop is the surprise this feature must not have.
+ */
+let watchedStore: any = null;
+let onQuestsChanged: (() => void) | null = null;
+let knownEnrolled = new Set<string>();
+
+function enrolledQuestIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const q of listQuests()) {
+        if (q.userStatus?.enrolledAt) ids.add(q.id);
+    }
+    return ids;
+}
+
+function armWatcher(): void {
+    if (onQuestsChanged || !settings.store.watchForEnrollments) return;
+
+    const store = getQuestStore();
+    if (typeof store?.addChangeListener !== "function") {
+        console.warn("[OrionQuests] QuestStore not found, the enrollment watcher is off for this session.");
+        return;
+    }
+
+    // Seed from what is already accepted. Without this the first store event after arming
+    // reads every existing enrollment as new and starts the engine the user never asked for.
+    knownEnrolled = enrolledQuestIds();
+
+    onQuestsChanged = () => {
+        // The store emits for progress ticks, dismissals, claims and anything else it holds.
+        // Only a quest that gained enrolledAt since the last look means "the user just
+        // accepted something", and waking the engine on unrelated churn is exactly what
+        // would make this feature unpredictable.
+        const current = enrolledQuestIds();
+        let accepted: string | null = null;
+        for (const id of current) {
+            if (!knownEnrolled.has(id)) { accepted = id; break; }
+        }
+        knownEnrolled = current;
+
+        if (!accepted || isEngineRunning()) return;
+        console.log(`[OrionQuests] Quest ${accepted} accepted in Discord, starting the engine.`);
+        // fire and forget, same as ensureStart: teardown is startOrion's own finally
+        startOrion();
+    };
+
+    watchedStore = store;
+    watchedStore.addChangeListener(onQuestsChanged);
+}
+
+function disarmWatcher(): void {
+    if (onQuestsChanged && watchedStore) {
+        try { watchedStore.removeChangeListener(onQuestsChanged); }
+        catch (e) { console.error("[OrionQuests] Failed to detach the enrollment watcher:", e); }
+    }
+    // cleared even if the detach threw: holding a listener we can no longer remove is worse
+    // than dropping the reference, and re-arming attaches a fresh one
+    onQuestsChanged = null;
+    watchedStore = null;
+    knownEnrolled.clear();
+}
 
 // No local `isRunning` mirror: a second flag can disagree with the engine, and when it did,
 // /orion stop refused to stop an engine that was still up. startOrion() sets the engine flag
 // synchronously before its first await, so this reads true immediately after the call below.
 async function ensureStart(): Promise<string> {
+    // re-arms even when the engine is already up, so a start after an explicit stop always
+    // leaves the watcher in the state the setting asks for
+    armWatcher();
     if (isEngineRunning()) return "Already running.";
     // fire and forget. The main loop awaits internally, teardown is handled by startOrion's finally
     startOrion();
@@ -25,9 +103,11 @@ async function ensureStart(): Promise<string> {
 }
 
 function ensureStop(): string {
-    if (!isEngineRunning()) return "Not running.";
+    const wasWatching = onQuestsChanged !== null;
+    disarmWatcher();
+    if (!isEngineRunning()) return wasWatching ? "Not running. Stopped watching for accepted quests." : "Not running.";
     stopOrion();
-    return "Stopped.";
+    return wasWatching ? "Stopped, and no longer watching for accepted quests." : "Stopped.";
 }
 
 function statusSummary(): string {
@@ -95,9 +175,17 @@ export default definePlugin({
         await repairSuppressedPresence();
 
         try {
+            // Flipping the setting off has to reach an already-armed watcher, and flipping it
+            // on should not make the user restart the plugin to get one.
+            setWatchForEnrollmentsHook(enabled => {
+                if (enabled) armWatcher();
+                else disarmWatcher();
+            });
+
             if (settings.store.autoStart) {
                 await ensureStart();
             } else {
+                armWatcher();
                 console.log("[OrionQuests] Plugin loaded. Use `/orion start` to begin (or enable Auto Start in settings).");
             }
         } catch (e) {
@@ -106,6 +194,9 @@ export default definePlugin({
     },
 
     stop() {
+        // Drop the settings bridge first: a toggle arriving mid-teardown would otherwise
+        // re-arm the watcher the next line is about to remove.
+        setWatchForEnrollmentsHook(null);
         try { ensureStop(); }
         catch (e) { console.error("[OrionQuests] Failed to stop cleanly:", e); }
     },
