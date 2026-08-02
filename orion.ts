@@ -416,8 +416,13 @@ export function stopOrion(): void {
     // Retire whatever was still in flight. Without this, a quest stopped part-way keeps a
     // RUNNING entry in the registry, mainLoop's "already running" guard skips it on every
     // later start, and the queue comes up empty while /orion status still reports it.
+    // PENDING goes with them: unlike COMPLETED it is an instruction rather than a result, and
+    // a stopped engine telling you to go accept a quest is telling you to do something that
+    // will have no effect until you start it again.
     for (const [id, e] of dashboard) {
-        if (e.status === "RUNNING" || e.status === "QUEUE") dashboard.set(id, { ...e, status: "STOPPED" });
+        if (e.status === "RUNNING" || e.status === "QUEUE" || e.status === "PENDING") {
+            dashboard.set(id, { ...e, status: "STOPPED", actionRequired: null });
+        }
     }
     emitDashboard();
 
