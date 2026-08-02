@@ -149,7 +149,7 @@ Every long-running subscription (Dispatcher events, safety timers, patched store
 
 All already in code, not proposals:
 
-- **JIT enrollment** (v4.4): quests enrolled one at a time right before execution.
+- **JIT enrollment** (v4.4): quests enrolled one at a time right before execution. Both engines can turn it off (`autoEnroll`), which leaves quests you have not accepted untouched and pending until you accept them in Discord yourself.
 - **Randomized intervals**: every polling/heartbeat loop uses `rnd(min,max)` ranges.
 - **Realistic PIDs** for injected games (multiples of 4).
 - **Natural video timestamps**: 6-decimal float seconds; cadence `rnd(3500,4750)`ms (2x faster than Discord's native 7-9.5s player loop).
