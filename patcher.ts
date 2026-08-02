@@ -19,6 +19,7 @@
  * for the duration and restore it on cleanup.
  */
 
+import * as DataStore from "@api/DataStore";
 import { getUserSettingLazy } from "@api/UserSettings";
 import { Logger } from "@utils/Logger";
 
@@ -36,6 +37,32 @@ const RPC_DISPATCH = "LOCAL_ACTIVITY_UPDATE";
 // `!` like Vencord's own GameActivityToggle: the proxy is always truthy, so a null check
 // buys nothing: a missing setting shows up as a throw on first access instead.
 const ShowCurrentGame = getUserSettingLazy<boolean>("status", "showCurrentGame")!;
+
+// Breadcrumb written before showCurrentGame is turned off and deleted once it is put back.
+// If it is still there when the plugin loads, the previous session ended without cleanup.
+const SUPPRESSION_KEY = "OrionQuests_suppressedPresence";
+
+/**
+ * Put showCurrentGame back if a previous session died with it off.
+ *
+ * Cleanup is not guaranteed to run: `stop()` is skipped on a page reload, and a reload is
+ * the first thing most people try when something looks stuck. Without this, the account
+ * setting stays off with no engine running and nothing left holding the old value, which
+ * is a change to the user's Discord that Orion made and never undid.
+ *
+ * Called from the plugin's start(), not from startOrion(), so it repairs on plugin load
+ * rather than requiring the user to run another quest first.
+ */
+export async function repairSuppressedPresence(): Promise<void> {
+    try {
+        if (!await DataStore.get(SUPPRESSION_KEY)) return;
+        await ShowCurrentGame.updateSetting(true);
+        await DataStore.del(SUPPRESSION_KEY);
+        logger.info("[Patcher] Previous session ended without restoring your Game Activity setting. Turned it back on.");
+    } catch (e: any) {
+        logger.warn(`[Patcher] Could not restore showCurrentGame from a previous session: ${e?.message}`);
+    }
+}
 
 // Overriding getRunningGames alone is no longer enough. Canary derives quest eligibility
 // from the "visible"/"candidate" views, and a game absent from those never gets a heartbeat
@@ -112,6 +139,13 @@ export class Patcher {
             try {
                 this.savedShowCurrentGame = ShowCurrentGame.getSetting();
                 if (this.savedShowCurrentGame) {
+                    // Record the intent before acting on it. Cleanup only runs if the renderer
+                    // lives long enough, and a plain page reload skips it entirely, which used
+                    // to leave the account setting off with nothing left to restore it. With
+                    // the breadcrumb on disk, repairSuppressedPresence() puts it back the next
+                    // time the plugin loads. Verified: reload mid-run left it off before this.
+                    DataStore.set(SUPPRESSION_KEY, true)
+                        .catch((e: any) => debug(logger, `[Patcher] Could not record the suppression breadcrumb: ${e?.message}`));
                     ShowCurrentGame.updateSetting(false)
                         .catch((e: any) => logger.warn(`[Patcher] Could not turn showCurrentGame off, activity stays visible: ${e?.message}`));
                 }
@@ -125,10 +159,13 @@ export class Patcher {
             if (restore) {
                 try {
                     ShowCurrentGame.updateSetting(true)
+                        .then(() => DataStore.del(SUPPRESSION_KEY))
                         .catch((e: any) => logger.error("[Patcher] Failed to restore showCurrentGame. Re-enable 'Display current activity as a status message' in Discord settings:", e));
                 } catch (e: any) {
                     logger.error("[Patcher] Failed to restore showCurrentGame. Re-enable 'Display current activity as a status message' in Discord settings:", e);
                 }
+            } else {
+                DataStore.del(SUPPRESSION_KEY).catch(() => { });
             }
         }
     }

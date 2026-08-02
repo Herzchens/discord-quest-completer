@@ -11,6 +11,7 @@ import { ApplicationCommandInputType, ApplicationCommandOptionType, sendBotMessa
 import definePlugin from "@utils/types";
 
 import { isEngineRunning, readDashboard, startOrion, stopOrion } from "./orion";
+import { repairSuppressedPresence } from "./patcher";
 import { settings } from "./settings";
 
 // No local `isRunning` mirror: a second flag can disagree with the engine, and when it did,
@@ -82,6 +83,11 @@ export default definePlugin({
     ],
 
     async start() {
+        // Before anything else, undo a presence suppression a previous session left behind.
+        // Runs on plugin load rather than on engine start, so a user who reloaded mid-run gets
+        // their Game Activity setting back without having to run another quest.
+        await repairSuppressedPresence();
+
         try {
             if (settings.store.autoStart) {
                 await ensureStart();

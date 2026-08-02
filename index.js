@@ -5,7 +5,7 @@
 
     const CONFIG = {
         NAME: "Orion",
-        VERSION: "v4.9.8",
+        VERSION: "v4.9.9",
         THEME: "#5865F2",             // discord blurple
         SUCCESS: "#3BA55C",
         WARN: "#faa61a",
@@ -966,6 +966,7 @@
     const Patcher = {
         games: [], real: {}, active: false,
         savedShowCurrentGame: null,  // value before we forced it off; null = not suppressed
+        _unhide: null,               // pagehide listener, detached once the setting is restored
 
         // Overriding getRunningGames alone is no longer enough. Canary derives quest
         // eligibility from the "visible"/"candidate" views, and a game absent from those
@@ -1032,6 +1033,13 @@
                     if (this.savedShowCurrentGame) {
                         Promise.resolve(setting.updateSetting(false)).catch(e =>
                             Logger.log(`[Patcher] Could not turn showCurrentGame off, activity stays visible: ${e.message}`, 'warn'));
+                        // Reload skips shutdown entirely, and reloading is the first thing most
+                        // people try when something looks stuck. Attempt the restore on the way
+                        // out, and say plainly what to do if it doesn't land, because the write
+                        // is async and a page teardown gives it no guarantee of completing.
+                        this._unhide = () => { try { setting.updateSetting(true); } catch (_) { } };
+                        window.addEventListener('pagehide', this._unhide);
+                        Logger.log('[Patcher] Your "Display current activity as a status message" setting is off while quests run. STOP puts it back. If Discord is closed or reloaded before then, re-enable it in Discord settings.', 'warn');
                     }
                 } catch (e) {
                     this.savedShowCurrentGame = null;
@@ -1040,6 +1048,7 @@
             } else if (!shouldSuppress && this.savedShowCurrentGame !== null) {
                 const restore = this.savedShowCurrentGame;
                 this.savedShowCurrentGame = null;
+                if (this._unhide) { window.removeEventListener('pagehide', this._unhide); this._unhide = null; }
                 if (restore) {
                     try {
                         Promise.resolve(setting.updateSetting(true)).catch(e =>
@@ -1244,19 +1253,17 @@
             const startTime = Date.now();
             let calls = 0;
 
-            // Simulate initial player buffer ping
-            if (cur === 0) {
-                await sleep(rnd(200, 350));
-                cur = 0.2 + (Math.random() * 0.05);
-                try {
-                    await Traffic.enqueue(`/quests/${q.id}/video-progress`, { timestamp: Number(cur.toFixed(6)) });
-                    calls++;
-                } catch (e) { Logger.log(`[Video] Initial ping failed: ${e.message}`, 'debug'); }
-            }
+            // No synthetic first ping. It used to fire 200-350ms in with a timestamp of
+            // 0.200-0.250, which meant every video quest from every user opened with a value
+            // inside the same 50ms window. A real player reports its first tick on its own
+            // cadence, so the loop below is left to send it.
 
             while (cur < t.target && RUNTIME.running) {
-                // 2x faster than Discord's native 7-9.5s player cadence
-                const delayMs = rnd(3500, 4750);
+                // Match Discord's native player cadence. A shorter interval buys nothing:
+                // `cur` advances by real elapsed time below, so the quest still takes `target`
+                // seconds of wall clock either way, and halving the delay only doubles the
+                // number of requests. Measured: 68s target finished in 73s at 18 requests.
+                const delayMs = rnd(7000, 9500);
                 await sleep(delayMs);
 
                 // calculate elapsed time with execution jitter

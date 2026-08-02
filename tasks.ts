@@ -175,20 +175,17 @@ export class TaskRunner {
 
         const startTime = Date.now();
 
-        // initial buffer ping
-        if (cur === 0) {
-            await sleep(rnd(200, 350));
-            cur = 0.2 + Math.random() * 0.05;
-            try {
-                await this.traffic.enqueue(`/quests/${q.id}/video-progress`, { timestamp: Number(cur.toFixed(6)) });
-            } catch (e: any) {
-                debug(logger, `[Video] Initial ping failed: ${e?.message}`);
-            }
-        }
+        // No synthetic first ping. It used to fire 200-350ms in with a timestamp of
+        // 0.200-0.250, which meant every video quest from every user opened with a value
+        // inside the same 50ms window. A real player reports its first tick on its own
+        // cadence, so the loop below is left to send it.
 
         while (cur < t.target && this.runtime.running) {
-            // 2x faster than Discord's native 7-9.5s player cadence
-            const delayMs = rnd(3500, 4750);
+            // Match Discord's native player cadence. A shorter interval buys nothing:
+            // `cur` advances by real elapsed time below, so the quest still takes `target`
+            // seconds of wall clock either way, and halving the delay only doubles the
+            // number of requests. Measured: 68s target finished in 73s at 18 requests.
+            const delayMs = rnd(7000, 9500);
             await sleep(delayMs);
             const elapsedSec = (delayMs / 1000) + (Math.random() * 0.02 - 0.01);
             cur += elapsedSec;
