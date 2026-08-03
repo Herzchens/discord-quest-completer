@@ -5,7 +5,7 @@
 
     const CONFIG = {
         NAME: "Orion",
-        VERSION: "v4.10.0",
+        VERSION: "v4.10.1",
         THEME: "#5865F2",             // discord blurple
         SUCCESS: "#3BA55C",
         WARN: "#faa61a",
@@ -1187,6 +1187,9 @@
 
     const Tasks = {
         skipped: new Set(),  // quest IDs that returned 4xx, no point retrying
+        // Why the last bypass attempt gave up, so a failed achievement quest reports a real
+        // reason instead of "Cannot auto-complete". Reset at the start of every attempt.
+        lastBypassFailure: null,
         _streamReal: undefined,  // untouched StreamStore method, captured before the first spoof
         _streamSpoofs: 0,        // active STREAM tasks holding the spoof
 
@@ -1644,7 +1647,11 @@
             // before it ever tried. t.appId already carries whatever Tasks.appIdFor resolved,
             // so prefer it and keep the legacy read as the last fallback (issue #43).
             const appId = t.appId || q.config?.application?.id;
-            if (!appId) return false;
+            Tasks.lastBypassFailure = null;
+            if (!appId) {
+                Tasks.lastBypassFailure = 'this quest carries no application id, so there is nothing to authorize against';
+                return false;
+            }
             // appId is interpolated straight into discordsays URLs. Refuse anything
             // non-numeric so a malformed/hostile id can't redirect the request elsewhere.
             if (!/^\d+$/.test(String(appId))) {
@@ -1734,6 +1741,7 @@
                 const code = e?.body?.code;
                 // 50165 = Cannot launch Age-Gated Activity: age-gated or delisted
                 if (code === 50165) {
+                    Tasks.lastBypassFailure = 'the activity is age-gated or delisted, so Discord refuses the proxy ticket on this account';
                     Logger.log(`[Bypass] "${t.name}" can't be launched (age-gated or delisted). Discord blocks the proxy ticket, so there is nothing we can do.`, 'warn');
                     return false;
                 }
@@ -1744,6 +1752,7 @@
                 else if (e?.message) parts.push(e.message);
                 else if (typeof e === 'string') parts.push(e);
                 else if (e) { try { parts.push(JSON.stringify(e).slice(0, 200)); } catch { parts.push(String(e)); } }
+                Tasks.lastBypassFailure = `the Discord Says bypass failed (${parts.join(', ') || 'unknown error'})`;
                 Logger.log(`[Bypass] Failed: ${parts.join(', ') || 'unknown'}`, 'warn');
                 return false;
             } finally {
@@ -1818,7 +1827,9 @@
             // both auto-paths failed: skip the quest. no more 25-min passive wait.
             if (!RUNTIME.running) return;
             Logger.log(`[Task] Skipping "${t.name}". No auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`, 'warn');
-            return Tasks.failTask(q, t, 'Cannot auto-complete');
+            // The bypass records why it gave up, so pass that on rather than a bare
+            // "Cannot auto-complete", which left nothing to act on.
+            return Tasks.failTask(q, t, Tasks.lastBypassFailure ?? 'no auto-completion path worked');
         },
 
         // heartbeat loop against a voice channel to simulate activity participation

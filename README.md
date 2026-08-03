@@ -1,6 +1,6 @@
 # Orion
 
-[![Version](https://img.shields.io/badge/v4.10.0-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
+[![Version](https://img.shields.io/badge/v4.10.1-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -139,6 +139,9 @@ Bug reports, PRs and docs all welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has 
 ---
 
 ## Changelog
+
+### v4.10.1
+- **`/orion status` says why a task failed.** A row read `FAILED (0%)` and nothing else, so the only way to find out what happened was to open the console, and for the plugin there is no dashboard log to fall back on. The reason was already being computed and handed to `failTask`; it just never reached the status line. Failed rows now carry it, and the achievement path reports the specific cause instead of a blanket "cannot auto-complete": an age-gated or delisted activity, a bypass that failed with the HTTP status and error code, a missing application id, or the bypass setting being off. The reason is scoped to `FAILED` and cleared on any later row for the same quest, so it cannot end up explaining a state the quest is no longer in.
 
 ### v4.10.0
 This release came out of reading what Discord's own client puts on the wire and diffing it against what Orion sends. Every item below was captured at the network layer on a live client, and the real-client side of each comparison came from a genuine game running on the same machine, not from reasoning about the code.

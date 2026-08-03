@@ -35,7 +35,7 @@ const MAX_TASK_FAILURES = 5;
 const BLACKLISTED_QUEST_ID = "1412491570820812933";
 
 export interface TaskCallbacks {
-    onProgress: (id: string, info: { name: string; type: TaskType; cur: number; max: number; status: string; actionRequired?: string | null; }) => void;
+    onProgress: (id: string, info: { name: string; type: TaskType; cur: number; max: number; status: string; actionRequired?: string | null; reason?: string | null; }) => void;
     onComplete: (q: Quest, t: TaskInfo) => Promise<void>;
 }
 
@@ -47,6 +47,11 @@ export class TaskRunner {
      * the setting on can put them back in play. See retryConsentSkipped().
      */
     public consentSkipped = new Set<string>();
+    /**
+     * Why the last bypass attempt gave up, so the ACHIEVEMENT handler can put a real reason
+     * on the failed row instead of "Cannot auto-complete". Reset at the start of every attempt.
+     */
+    private lastBypassFailure: string | null = null;
     private stores: Stores;
     private traffic: Traffic;
     private patcher: Patcher;
@@ -185,7 +190,7 @@ export class TaskRunner {
     }
 
     failTask(q: Quest, t: TaskInfo, reason: string): void {
-        this.cb.onProgress(q.id, { name: t.name, type: t.type, cur: 0, max: t.target, status: "FAILED" });
+        this.cb.onProgress(q.id, { name: t.name, type: t.type, cur: 0, max: t.target, status: "FAILED", reason });
         logger.error(`[Task] Aborted "${t.name}": ${reason}`);
         this.skipped.add(q.id);
     }
@@ -431,7 +436,11 @@ export class TaskRunner {
         // TaskInfo.appId is string | number (it carries a `?? 0` fallback), and this value is
         // interpolated into discordsays URLs, so normalise to string once here.
         const appId = String(t.appId || q.config?.application?.id || "");
-        if (!appId) return false;
+        this.lastBypassFailure = null;
+        if (!appId) {
+            this.lastBypassFailure = "this quest carries no application id, so there is nothing to authorize against";
+            return false;
+        }
         // Consent gate: the OAuth bypass authorizes a third-party app on the user's account.
         // It only runs when the user explicitly enabled it in settings (default off). The toggle
         // is the informed-consent gate and covers the non-interactive /orion start + Auto-Start paths.
@@ -504,6 +513,7 @@ export class TaskRunner {
             const code = e?.body?.code;
             // 50165 = Cannot launch Age-Gated Activity: age-gated or delisted
             if (code === 50165) {
+                this.lastBypassFailure = "the activity is age-gated or delisted, so Discord refuses the proxy ticket on this account";
                 logger.warn(`[Bypass] "${t.name}" can't be launched (age-gated or delisted). Discord blocks the proxy ticket, so there is nothing we can do.`);
                 return false;
             }
@@ -514,6 +524,7 @@ export class TaskRunner {
             else if (e?.message) parts.push(e.message);
             else if (typeof e === "string") parts.push(e);
             else if (e) { try { parts.push(JSON.stringify(e).slice(0, 200)); } catch { parts.push(String(e)); } }
+            this.lastBypassFailure = `the Discord Says bypass failed (${parts.join(", ") || "unknown error"})`;
             logger.warn(`[Bypass] Failed: ${parts.join(", ") || "unknown"}`);
             return false;
         } finally {
@@ -594,8 +605,10 @@ export class TaskRunner {
         }
 
         // both auto-paths failed: skip the quest. no more 25-min passive wait.
+        // The bypass records why it gave up, so pass that on instead of a bare
+        // "Cannot auto-complete", which left the status with nothing to act on.
         logger.warn(`[Task] Skipping "${t.name}". No auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`);
-        return this.failTask(q, t, "Cannot auto-complete");
+        return this.failTask(q, t, this.lastBypassFailure ?? "no auto-completion path worked");
     }
 
     /**

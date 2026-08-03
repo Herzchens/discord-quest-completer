@@ -72,6 +72,12 @@ export interface DashboardEntry {
     status: string;
     claimable?: boolean;
     actionRequired?: string | null;
+    /**
+     * Why a task ended the way it did. Only set for FAILED, where a bare status is useless:
+     * the reason already existed, went into the log, and was dropped before it reached
+     * `/orion status`, so anyone reading the status saw `FAILED (0%)` and had nothing to act on.
+     */
+    reason?: string | null;
 }
 
 const RUNTIME: OrionRuntime = {
@@ -125,8 +131,12 @@ function setEntry(id: string, partial: Partial<DashboardEntry> & { name: string;
     // get through, since those are results worth keeping.
     if (!RUNTIME.running && (partial.status === "RUNNING" || partial.status === "QUEUE")) return;
 
-    const prev = dashboard.get(id) ?? { id, claimable: false, actionRequired: null } as DashboardEntry;
-    dashboard.set(id, { ...prev, id, ...partial });
+    const prev = dashboard.get(id) ?? { id, claimable: false, actionRequired: null, reason: null } as DashboardEntry;
+    // Entries merge over the previous value, so a reason from an earlier failure would ride
+    // along on the row after a retry and explain a state the quest is no longer in. It belongs
+    // to FAILED only, so anything else clears it unless the caller passes one explicitly.
+    const carried = partial.status === "FAILED" || "reason" in partial ? {} : { reason: null };
+    dashboard.set(id, { ...prev, id, ...partial, ...carried });
     emitDashboard();
 }
 function removeEntry(id: string): void {

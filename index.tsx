@@ -123,7 +123,11 @@ function statusSummary(): string {
         const waiting = e.actionRequired === "ENROLL"
             ? ", waiting for you to accept it in Discord's Quests page"
             : "";
-        return `• ${e.name}: ${e.status} (${pct}%)${waiting}`;
+        // A bare FAILED tells you nothing about what to do next, and the reason was already
+        // being computed and thrown away here. The log has it, but a status line someone reads
+        // in a channel should not require going to the console to be actionable.
+        const why = e.status === "FAILED" && e.reason ? `, ${e.reason}` : "";
+        return `• ${e.name}: ${e.status} (${pct}%)${waiting}${why}`;
     });
     return [`${running ? "Running" : "Stopped"}, ${entries.length} task(s):`, ...lines].join("\n");
 }
