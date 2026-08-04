@@ -94,7 +94,23 @@ if (-not $SkipBundle) {
     if ($banner -notmatch 'Standalone:\s*true')      { Die "bundle dist is NOT a --standalone build. It would break Vencord's updater (#39)." }
     if ($banner -notmatch 'Updater Disabled:\s*true'){ Die "bundle dist is NOT --disable-updater. Its HTTP updater would revert the dist to vanilla and delete the plugin (#39)." }
     if (-not (Select-String -Path (Join-Path $dist 'renderer.js') -Pattern 'OrionQuests' -SimpleMatch -Quiet)) { Die "the plugin is not in the bundle dist" }
-    Good "bundle dist is standalone + updater-disabled and contains the plugin"
+
+    # The bundle is built from whatever userplugins the source clone happens to hold, so any
+    # third-party plugin sitting beside ours gets compiled into the dist and shipped inside an
+    # artifact we distribute under our own licence. That happened in v4.9.9 and v4.10.0, which
+    # went out carrying a GPL-3.0 plugin. Refuse rather than trust the clone to be clean.
+    $foreign = @(
+        @{ Name = 'QuestUI'; Marker = 'renderQuestButtonTopBar' }
+    )
+    $renderers = Get-ChildItem $dist -File | Where-Object { $_.Name -match '^(vencordDesktop)?[Rr]enderer\.js$' }
+    foreach ($f in $foreign) {
+        foreach ($r in $renderers) {
+            if (Select-String -Path $r.FullName -Pattern $f.Marker -SimpleMatch -Quiet) {
+                Die "$($f.Name) is compiled into $($r.Name). Move it out of <clone>\src\userplugins before building the bundle dist; we must not redistribute someone else's plugin inside ours."
+            }
+        }
+    }
+    Good "bundle dist is standalone + updater-disabled, contains our plugin and no foreign one"
 }
 
 # ---- 4. zip ---------------------------------------------------------------------
