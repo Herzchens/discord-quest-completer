@@ -115,6 +115,32 @@ function statusSummary(): string {
     const entries = readDashboard();
     if (!running && entries.length === 0) return "Idle. Use `/orion start` to begin.";
     if (entries.length === 0) return running ? "Running. No active tasks yet." : "Idle.";
+
+    // A bare task count answers "is it alive" and nothing else. The breakdown is what someone
+    // actually wants to know at a glance, and it is already sitting in the entries.
+    const tally = new Map<string, number>();
+    for (const e of entries) tally.set(e.status, (tally.get(e.status) ?? 0) + 1);
+    const breakdown = [...tally.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([status, n]) => `${n} ${status.toLowerCase()}`)
+        .join(", ");
+
+    // The claimable flag is written once when the quest finishes and never revisited, so a
+    // reward claimed afterwards in Discord's own Quests page would leave it stale and the
+    // status would keep advertising a reward that is already collected. Ask the store, which
+    // is the thing that actually knows, and fall back to the flag if the quest is not there.
+    const store = getQuestStore();
+    const stillUnclaimed = (e: { id: string; claimable?: boolean; }) => {
+        if (!e.claimable) return false;
+        try {
+            const q = store?.getQuest?.(e.id);
+            return q ? !q.userStatus?.claimedAt : true;
+        } catch {
+            return true;
+        }
+    };
+    const claimable = entries.filter(stillUnclaimed).length;
+
     const lines = entries.map(e => {
         const pct = e.max > 0 ? Math.min(100, (e.cur / e.max) * 100).toFixed(0) : "?";
         // The userscript parks a quest as PENDING and its dashboard draws an ENROLL button.
@@ -127,9 +153,17 @@ function statusSummary(): string {
         // being computed and thrown away here. The log has it, but a status line someone reads
         // in a channel should not require going to the console to be actionable.
         const why = e.status === "FAILED" && e.reason ? `, ${e.reason}` : "";
-        return `• ${e.name}: ${e.status} (${pct}%)${waiting}${why}`;
+        // The engine marks a finished quest claimable and nothing ever read the flag, so a
+        // reward sitting unclaimed looked exactly like one already collected.
+        const reward = stillUnclaimed(e) ? ", reward not claimed yet" : "";
+        return `• ${e.name}: ${e.status} (${pct}%)${waiting}${why}${reward}`;
     });
-    return [`${running ? "Running" : "Stopped"}, ${entries.length} task(s):`, ...lines].join("\n");
+
+    const header = `${running ? "Running" : "Stopped"}, ${entries.length} task(s): ${breakdown}`;
+    const footer = claimable > 0
+        ? [`${claimable} reward(s) waiting. Claim them on Discord's Quests page, or turn on "Try to claim reward" to have Orion attempt it (claiming often triggers a captcha).`]
+        : [];
+    return [header, ...lines, ...footer].join("\n");
 }
 
 export default definePlugin({

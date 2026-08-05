@@ -1,6 +1,6 @@
 # Orion
 
-[![Version](https://img.shields.io/badge/v4.10.1-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
+[![Version](https://img.shields.io/badge/v4.10.2-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -139,6 +139,9 @@ Bug reports, PRs and docs all welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has 
 ---
 
 ## Changelog
+
+### v4.10.2
+- **`/orion status` says what is finished and what is still owed to you.** It opened with a bare task count and each row was just a status and a percentage, so the two things people actually check, how much is left and whether a reward is sitting unclaimed, were the two things it did not answer ([#56](https://github.com/nyxxbit/discord-quest-completer/issues/56)). The header now breaks the tasks down by status, a completed quest whose reward has not been collected says so, and a footer tells you how many are waiting and where to claim them. The engine had been marking finished quests `claimable` since the dashboard was written and nothing ever read the flag. It is also not trusted on its own: the flag is written once when the quest finishes, so claiming the reward yourself in Discord afterwards would leave it stale, and the status checks the quest store before saying a reward is outstanding.
 
 ### v4.10.1
 - **`/orion status` says why a task failed.** A row read `FAILED (0%)` and nothing else, so the only way to find out what happened was to open the console, and for the plugin there is no dashboard log to fall back on. The reason was already being computed and handed to `failTask`; it just never reached the status line. Failed rows now carry it, and the achievement path reports the specific cause instead of a blanket "cannot auto-complete": an age-gated or delisted activity, a bypass that failed with the HTTP status and error code, a missing application id, or the bypass setting being off. The reason is scoped to `FAILED` and cleared on any later row for the same quest, so it cannot end up explaining a state the quest is no longer in.
