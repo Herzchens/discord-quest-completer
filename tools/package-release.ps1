@@ -111,6 +111,18 @@ if (-not $SkipBundle) {
         }
     }
     Good "bundle dist is standalone + updater-disabled, contains our plugin and no foreign one"
+
+    # The bundle is a compiled Vencord, which is GPL-3.0-or-later, so conveying it means
+    # shipping the licence text and saying where the corresponding source is. That was missing
+    # for every release before v4.10.3.
+    $vencordLicence = Join-Path $bundleDir 'LICENSE-VENCORD.txt'
+    if (-not (Test-Path $vencordLicence)) { Die "LICENSE-VENCORD.txt is missing from the bundle. The bundle conveys Vencord (GPL-3.0-or-later) and must carry its licence text." }
+    if (-not (Select-String -Path $vencordLicence -Pattern 'GNU GENERAL PUBLIC LICENSE' -SimpleMatch -Quiet)) { Die "LICENSE-VENCORD.txt does not contain the GPL text." }
+    $bundleReadme = Join-Path $bundleDir 'README.txt'
+    foreach ($needle in @('GPL-3.0-or-later', 'github.com/Vendicated/Vencord', 'LICENSE-VENCORD.txt')) {
+        if (-not (Select-String -Path $bundleReadme -Pattern $needle -SimpleMatch -Quiet)) { Die "the bundle README is missing '$needle'; it must state the licence and where the corresponding source is." }
+    }
+    Good "bundle carries Vencord's licence text and a source pointer"
 }
 
 # ---- 4. zip ---------------------------------------------------------------------

@@ -123,3 +123,38 @@ plugin rides along through every Vencord update.
   account. It can't pull rewards that weren't offered to you.
 
 * Project source: github.com/nyxxbit/discord-quest-completer
+
+
+==============================================================
+                  LICENSES AND SOURCE
+==============================================================
+
+This zip is not just our code. The dist folder is a compiled
+build of Vencord with the OrionQuests plugin included, so most
+of what you are installing is Vencord.
+
+* Vencord is licensed GPL-3.0-or-later.
+  Copyright (c) 2022 Vendicated and contributors.
+  Its own copyright notice is also embedded in the build, in the
+  dist/*.LEGAL.txt files.
+  Full license text: LICENSE-VENCORD.txt, included in this zip.
+  Source code: github.com/Vendicated/Vencord
+
+  Because this bundle contains Vencord, the bundle as a whole is
+  distributed under GPL-3.0-or-later. You have the right to the
+  complete corresponding source for it. The build here is plain
+  upstream Vencord plus our plugin, produced with:
+
+      pnpm build --standalone --disable-updater
+
+  from the Vencord repository above with our plugin sources placed
+  in src/userplugins/orionQuests. Those plugin sources are the
+  *.ts / *.tsx files at the root of our repository.
+
+* The OrionQuests plugin itself is MIT.
+  Copyright (c) 2026 Gabriel Bertolassi.
+  Source: github.com/nyxxbit/discord-quest-completer
+
+If anything here is unclear or you want the exact tree a given
+release was built from, open an issue on our repository and we
+will point you at the commit.

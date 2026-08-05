@@ -1,6 +1,6 @@
 # Orion
 
-[![Version](https://img.shields.io/badge/v4.10.2-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
+[![Version](https://img.shields.io/badge/v4.10.3-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -139,6 +139,10 @@ Bug reports, PRs and docs all welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has 
 ---
 
 ## Changelog
+
+### v4.10.3
+- **The `orion-vencord-bundle` zip now ships the full GPL text and says where its source is.** That bundle is a compiled build of Vencord with our plugin inside it, and Vencord is GPL-3.0-or-later, so handing someone the zip is conveying GPL software. It already carried Vencord's copyright and licensing notice, which esbuild emits into `dist/*.LEGAL.txt`, but not the full licence text that GPL section 4 asks you to convey alongside the program, and nothing in it stated where the corresponding source could be had. The zip now includes `LICENSE-VENCORD.txt` and a README section naming the licence, the upstream repository and the exact build command used, and the packaging script refuses to build a bundle missing any of that.
+- **Correcting how the v4.9.9 and v4.10.0 bundle problem was described.** Those release notes, and the notices left on both releases, said a GPL-3.0 plugin had ended up inside an MIT artifact. That framing was wrong. The bundle has never been MIT: it is a Vencord distribution, so it has always been GPL-3.0-or-later. Only our own plugin inside it is MIT, and it stays MIT. There was therefore no licence incompatibility. What was actually wrong is that a third party's plugin was compiled in and distributed without their permission and without attribution, which is a violation on its own terms and is still ours. The remedy does not change and neither does anything a user should do.
 
 ### v4.10.2
 - **`/orion status` says what is finished and what is still owed to you.** It opened with a bare task count and each row was just a status and a percentage, so the two things people actually check, how much is left and whether a reward is sitting unclaimed, were the two things it did not answer ([#56](https://github.com/nyxxbit/discord-quest-completer/issues/56)). The header now breaks the tasks down by status, a completed quest whose reward has not been collected says so, and a footer tells you how many are waiting and where to claim them. The engine had been marking finished quests `claimable` since the dashboard was written and nothing ever read the flag. It is also not trusted on its own: the flag is written once when the quest finishes, so claiming the reward yourself in Discord afterwards would leave it stale, and the status checks the quest store before saying a reward is outstanding.
