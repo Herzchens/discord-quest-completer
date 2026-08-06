@@ -171,9 +171,10 @@ try {
         $ErrorActionPreference = $prev
 
         # runInstaller.mjs swallows CLI failures and still exits 0, so do NOT trust $injectCode.
-        # Verify the patch actually landed: the newest Discord app.asar stub must now point at
-        # THIS clone's patcher.js.
-        $asar = Get-ChildItem "$env:LOCALAPPDATA\Discord\app-*\resources\app.asar" -ErrorAction SilentlyContinue |
+        # Verify the patch actually landed: the newest Discord app.asar stub for the selected
+        # flavor must now point at THIS clone's patcher.js.
+        $discordRoot = Join-Path $env:LOCALAPPDATA $flavor
+        $asar = Get-ChildItem (Join-Path $discordRoot 'app-*\resources\app.asar') -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
         $patched = $false
         if ($asar) {
