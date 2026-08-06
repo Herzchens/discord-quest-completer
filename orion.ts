@@ -86,6 +86,13 @@ const RUNTIME: OrionRuntime = {
     skipped: new Set<string>(),
 };
 
+// RUNTIME is the public current-engine view. Every start also gets its own runtime object
+// and generation id so callbacks from a stopped run can never become current again merely
+// because a later run flips RUNTIME.running back to true.
+let nextRunId = 0;
+let activeRunId = 0;
+let activeRuntime: OrionRuntime | null = null;
+
 const dashboard = new Map<string, DashboardEntry>();
 const dashboardListeners = new Set<() => void>();
 let stores: Stores | null = null;
@@ -93,6 +100,13 @@ let patcher: Patcher | null = null;
 
 let traffic: Traffic | null = null;
 let tasks: TaskRunner | null = null;
+
+function isRunActive(runId: number, runRuntime: OrionRuntime): boolean {
+    return RUNTIME.running
+        && runRuntime.running
+        && activeRunId === runId
+        && activeRuntime === runRuntime;
+}
 
 /**
  * hideActivity is read live, but nothing re-read it between task boundaries: suppression is
@@ -194,9 +208,9 @@ function loadStores(): Stores {
  * clearest signal Discord gives that it has taken an interest in the account, and running on
  * through it is both futile and the worst thing to do about it.
  */
-function enrollmentBlockedUntil(): Date | null {
+function enrollmentBlockedUntil(questStoreForRun: any): Date | null {
     try {
-        const raw = stores?.QuestStore?.questEnrollmentBlockedUntil;
+        const raw = questStoreForRun?.questEnrollmentBlockedUntil;
         if (!raw) return null;
         const when = raw instanceof Date ? raw : new Date(raw);
         return isNaN(when.getTime()) || when.getTime() <= Date.now() ? null : when;
@@ -214,19 +228,33 @@ function getQuestsArray(questStore: any): Quest[] {
 }
 
 /** Run async tasks concurrently up to a specified limit, with stagger to avoid bursts. */
-async function runConcurrent(taskFns: Array<() => Promise<any>>, limit: number): Promise<any[]> {
+async function runConcurrent(
+    taskFns: Array<() => Promise<any>>,
+    limit: number,
+    runId: number,
+    runRuntime: OrionRuntime,
+): Promise<any[]> {
     const executing = new Set<Promise<any>>();
     for (const fn of taskFns) {
-        if (!RUNTIME.running) break;
+        if (!isRunActive(runId, runRuntime)) break;
         const p = fn().finally(() => executing.delete(p));
         executing.add(p);
         await sleep(rnd(1500, 4000));
+        if (!isRunActive(runId, runRuntime)) break;
         if (executing.size >= limit) await Promise.race(executing);
     }
     return Promise.allSettled(executing);
 }
 
-async function onTaskComplete(q: Quest, t: TaskInfo): Promise<void> {
+async function onTaskComplete(
+    runId: number,
+    runRuntime: OrionRuntime,
+    runTasks: TaskRunner,
+    q: Quest,
+    t: TaskInfo,
+): Promise<void> {
+    if (!isRunActive(runId, runRuntime)) return;
+
     setEntry(q.id, { name: t.name, type: t.type, cur: t.target, max: t.target, status: "COMPLETED" });
     logger.info(`[Task] Completed "${t.name}"!`);
     Sound.play("tick");
@@ -241,18 +269,23 @@ async function onTaskComplete(q: Quest, t: TaskInfo): Promise<void> {
         }
     } catch (e: any) { debug(logger, `[Notification] ${e?.message}`); }
 
-    if (settings.store.tryToClaimReward && tasks) {
+    if (settings.store.tryToClaimReward) {
         try {
             await sleep(rnd(2500, 6000));
-            if (!RUNTIME.running) return;
-            const claimRes: any = await tasks.claimReward(q.id);
+            if (!isRunActive(runId, runRuntime)) return;
+            const claimRes: any = await runTasks.claimReward(q.id);
+            if (!isRunActive(runId, runRuntime)) return;
             if (claimRes?.body?.claimed_at) {
                 logger.info(`[Claim] Reward for "${t.name}" claimed automatically!`);
                 setEntry(q.id, { name: t.name, type: t.type, cur: t.target, max: t.target, status: "CLAIMED" });
-                setTimeout(() => removeEntry(q.id), 2000);
+                const claimedEntry = dashboard.get(q.id);
+                setTimeout(() => {
+                    if (dashboard.get(q.id) === claimedEntry) removeEntry(q.id);
+                }, 2000);
                 return;
             }
         } catch (e: any) {
+            if (!isRunActive(runId, runRuntime)) return;
             const needsCaptcha = e?.body?.captcha_key || e?.body?.captcha_sitekey;
             if (needsCaptcha) {
                 logger.warn(`[Claim] Captcha required for "${t.name}". Use Discord's UI button.`);
@@ -262,12 +295,20 @@ async function onTaskComplete(q: Quest, t: TaskInfo): Promise<void> {
         }
     }
 
-    setEntry(q.id, { name: t.name, type: t.type, cur: t.target, max: t.target, status: "COMPLETED", claimable: true });
+    if (isRunActive(runId, runRuntime)) {
+        setEntry(q.id, { name: t.name, type: t.type, cur: t.target, max: t.target, status: "COMPLETED", claimable: true });
+    }
 }
 
-async function mainLoop(): Promise<void> {
+async function mainLoop(
+    runId: number,
+    runRuntime: OrionRuntime,
+    runStores: Stores,
+    runTasks: TaskRunner,
+    runTraffic: Traffic,
+): Promise<void> {
     let loopCount = 1;
-    while (RUNTIME.running) {
+    while (isRunActive(runId, runRuntime)) {
         try {
             logger.info(`[Cycle] Starting loop #${loopCount}...`);
 
@@ -275,14 +316,14 @@ async function mainLoop(): Promise<void> {
             // quest list carries the timestamp. Checked every cycle rather than once at start,
             // because the block can land mid-run, and continuing past it means hammering an
             // endpoint that is already refusing us.
-            const blockedUntil = enrollmentBlockedUntil();
+            const blockedUntil = enrollmentBlockedUntil(runStores.QuestStore);
             if (blockedUntil) {
                 logger.error(`[System] Discord has blocked quest enrollment on this account until ${blockedUntil.toLocaleString()}. Stopping instead of retrying.`);
                 break;
             }
 
-            const all = getQuestsArray(stores!.QuestStore);
-            const active = tasks!.activeQuests(all);
+            const all = getQuestsArray(runStores.QuestStore);
+            const active = runTasks.activeQuests(all);
 
             if (!active.length) {
                 logger.info("[System] All available quests are completed!");
@@ -293,13 +334,14 @@ async function mainLoop(): Promise<void> {
             const queues: { video: Array<() => Promise<any>>; game: Array<() => Promise<any>>; } = { video: [], game: [] };
 
             for (const q of active) {
+                if (!isRunActive(runId, runRuntime)) break;
                 try {
                     const cfg = q.config?.taskConfig ?? q.config?.taskConfigV2;
                     if (!cfg?.tasks || typeof cfg.tasks !== "object") {
                         logger.warn(`[Quest] ${q.id} has invalid task config. Skipping.`);
                         continue;
                     }
-                    const detected = tasks!.detectType(cfg, q.config?.application?.id);
+                    const detected = runTasks.detectType(cfg, q.config?.application?.id);
                     if (!detected) {
                         logger.warn(`[Quest] Unknown task type: ${q.config?.messages?.questName ?? q.id}`);
                         continue;
@@ -318,10 +360,10 @@ async function mainLoop(): Promise<void> {
                     // instead of running a task that can't finish (issue #43).
                     if ((type === "GAME" || type === "STREAM") && !appId) {
                         logger.warn(`[Quest] "${q.config?.messages?.questName ?? q.id}" has no application id in its config, so the game cannot be spoofed. Skipping.`);
-                        // activeQuests() filters on the TaskRunner's set; RUNTIME.skipped alone is
+                        // activeQuests() filters on the TaskRunner's set; the runtime set alone is
                         // never read, so skipping there re-detects and re-warns every cycle forever.
-                        RUNTIME.skipped.add(q.id);
-                        tasks!.skipped.add(q.id);
+                        runRuntime.skipped.add(q.id);
+                        runTasks.skipped.add(q.id);
                         continue;
                     }
                     const t: TaskInfo = {
@@ -353,61 +395,70 @@ async function mainLoop(): Promise<void> {
                     setEntry(t.id, { name: t.name, type: t.type, cur: 0, max: t.target, status: "QUEUE", actionRequired: null });
 
                     const taskFn = async () => {
+                        if (!isRunActive(runId, runRuntime)) return;
+
                         // JIT enrollment, only reached with auto-enroll on (the gate above
                         // returns first otherwise) or when the user enrolled themselves
                         if (!q.userStatus?.enrolledAt) {
                             logger.info(`[Enroll] Accepting quest: ${t.name}`);
                             try {
-                                await traffic!.enqueue(`/quests/${q.id}/enroll`, {
+                                await runTraffic.enqueue(`/quests/${q.id}/enroll`, {
                                     location: 11,
                                     is_targeted: false,
                                     metadata_sealed: null,
-                                    traffic_metadata_sealed: trafficMetadataSealed(stores!.QuestStore, q.id),
+                                    traffic_metadata_sealed: trafficMetadataSealed(runStores.QuestStore, q.id),
                                 });
                                 await sleep(rnd(800, 1500));
+                                if (!isRunActive(runId, runRuntime)) return;
                             } catch (e: any) {
+                                if (!isRunActive(runId, runRuntime)) return;
                                 // one definition of "this quest is gone", owned by traffic.ts
                                 if (isSkippableQuest(e)) {
-                                    RUNTIME.skipped.add(q.id);
-                                    tasks!.skipped.add(q.id);
+                                    runRuntime.skipped.add(q.id);
+                                    runTasks.skipped.add(q.id);
                                     logger.warn(`[Enroll] ${t.name} unavailable (${e.status}). Skipping.`);
                                 } else {
                                     logger.error(`[Enroll] Failed for ${t.name}: ${e?.message}`);
                                 }
-                                return tasks!.failTask(q, t, "Enrollment failed");
+                                return runTasks.failTask(q, t, "Enrollment failed");
                             }
                         }
-                        if (type === "WATCH_VIDEO") return tasks!.VIDEO(q, t, q.userStatus);
-                        if (type === "ACHIEVEMENT") return tasks!.ACHIEVEMENT(q, t);
-                        if (type === "STREAM") return tasks!.STREAM(q, t);
-                        if (type === "ACTIVITY") return tasks!.ACTIVITY(q, t);
-                        return tasks!.GAME(q, t);
+                        if (type === "WATCH_VIDEO") return runTasks.VIDEO(q, t, q.userStatus);
+                        if (type === "ACHIEVEMENT") return runTasks.ACHIEVEMENT(q, t);
+                        if (type === "STREAM") return runTasks.STREAM(q, t);
+                        if (type === "ACTIVITY") return runTasks.ACTIVITY(q, t);
+                        return runTasks.GAME(q, t);
                     };
 
                     if (type === "WATCH_VIDEO") queues.video.push(taskFn);
                     else queues.game.push(taskFn);
                 } catch (e: any) {
-                    logger.error(`[Quest] Error processing ${q.id}: ${e?.message}`);
+                    if (isRunActive(runId, runRuntime)) {
+                        logger.error(`[Quest] Error processing ${q.id}: ${e?.message}`);
+                    }
                 }
             }
 
             const total = queues.video.length + queues.game.length;
-            if (total > 0) {
+            if (total > 0 && isRunActive(runId, runRuntime)) {
                 logger.info(`[Cycle] Processing: ${queues.video.length} videos, ${queues.game.length} games.`);
-                const pGames = runConcurrent(queues.game, settings.store.gameConcurrency ?? 1);
-                const pVideos = runConcurrent(queues.video, settings.store.videoConcurrency ?? 2);
+                const pGames = runConcurrent(queues.game, settings.store.gameConcurrency ?? 1, runId, runRuntime);
+                const pVideos = runConcurrent(queues.video, settings.store.videoConcurrency ?? 2, runId, runRuntime);
                 await Promise.all([pGames, pVideos]);
-            } else {
+            } else if (isRunActive(runId, runRuntime)) {
                 await sleep(rnd(4000, 6000));
             }
 
-            if (!RUNTIME.running) break;
+            if (!isRunActive(runId, runRuntime)) break;
             logger.info(`[Cycle] Loop #${loopCount} complete. Waiting before rescan...`);
             await sleep(rnd(2500, 4500));
+            if (!isRunActive(runId, runRuntime)) break;
             loopCount++;
         } catch (e: any) {
+            if (!isRunActive(runId, runRuntime)) break;
             logger.error(`[Cycle] Error in loop #${loopCount}: ${e?.message ?? e}`);
             await sleep(3000);
+            if (!isRunActive(runId, runRuntime)) break;
             loopCount++;
         }
     }
@@ -418,7 +469,18 @@ export async function startOrion(): Promise<void> {
         logger.warn("Already running, ignoring start()");
         return;
     }
+
+    const runId = ++nextRunId;
+    const runRuntime: OrionRuntime = {
+        running: true,
+        cleanups: new Set<() => void>(),
+        skipped: new Set<string>(),
+    };
+    activeRunId = runId;
+    activeRuntime = runRuntime;
     RUNTIME.running = true;
+    RUNTIME.cleanups = runRuntime.cleanups;
+    RUNTIME.skipped = runRuntime.skipped;
 
     // Drop finished/aborted rows from earlier runs. Pruned here rather than on stop so results
     // stay readable after a run ends, but a fresh start never reports a previous session's tasks.
@@ -430,21 +492,31 @@ export async function startOrion(): Promise<void> {
     logger.info("Starting OrionQuests");
 
     try {
-        stores = loadStores();
+        const runStores = loadStores();
         // pass a getter, not a snapshot: the setting is toggleable mid-run
-        patcher = new Patcher(stores, () => !!settings.store.hideActivity);
+        const runPatcher = new Patcher(runStores, () => !!settings.store.hideActivity);
         SettingsStore.addChangeListener(hideActivityPath(), onHideActivityChanged);
-        traffic = new Traffic(stores.API, () => RUNTIME.running);
-        tasks = new TaskRunner(stores, traffic, patcher, RUNTIME, {
-            onProgress: (id, info) => setEntry(id, info),
-            onComplete: onTaskComplete,
+        const runTraffic = new Traffic(runStores.API, () => isRunActive(runId, runRuntime));
+        let runTasks!: TaskRunner;
+        runTasks = new TaskRunner(runStores, runTraffic, runPatcher, runRuntime, {
+            onProgress: (id, info) => {
+                if (isRunActive(runId, runRuntime)) setEntry(id, info);
+            },
+            onComplete: (q, t) => onTaskComplete(runId, runRuntime, runTasks, q, t),
         });
+
+        // Publish only the current run's objects for stopOrion and settings listeners. The loop
+        // and callbacks above retain their own references and never read a later run's globals.
+        stores = runStores;
+        patcher = runPatcher;
+        traffic = runTraffic;
+        tasks = runTasks;
 
         // Turning the achievement bypass on mid-run should reach the quests it already
         // refused, not just the ones detected after the flip.
         setAchievementBypassHook(enabled => {
-            if (!enabled || !tasks) return;
-            const restored = tasks.retryConsentSkipped();
+            if (!enabled || !isRunActive(runId, runRuntime)) return;
+            const restored = runTasks.retryConsentSkipped();
             if (restored > 0) logger.info(`[Settings] Achievement bypass enabled, retrying ${restored} skipped quest(s) on the next cycle.`);
         });
 
@@ -454,26 +526,42 @@ export async function startOrion(): Promise<void> {
             }
         } catch (e: any) { debug(logger, `[Notification] permission request failed: ${e?.message}`); }
 
-        await mainLoop();
+        await mainLoop(runId, runRuntime, runStores, runTasks, runTraffic);
     } catch (e: any) {
-        logger.error("Fatal:", e);
-        RUNTIME.running = false;
+        if (activeRunId === runId && activeRuntime === runRuntime) {
+            logger.error("Fatal:", e);
+            runRuntime.running = false;
+            RUNTIME.running = false;
+        } else {
+            debug(logger, `[Lifecycle] Stale run ${runId} exited after it had already been replaced: ${e?.message ?? e}`);
+        }
     } finally {
-        // mainLoop exits when nothing left to do; teardown unconditionally
-        stopOrion();
+        // A stale invocation must never tear down a newer engine generation.
+        if (activeRunId === runId && activeRuntime === runRuntime) stopOrion();
     }
 }
 
 export function stopOrion(): void {
-    if (!RUNTIME.running && !patcher && !stores) return;
+    const runRuntime = activeRuntime;
+    if (!RUNTIME.running && !patcher && !stores && !runRuntime) return;
+
+    // Invalidate this generation before running cleanup. Any sleeping callback that resumes
+    // during teardown now sees its own runRuntime false and can never become active again when
+    // a later start creates a different runtime object.
+    activeRunId = 0;
+    activeRuntime = null;
     RUNTIME.running = false;
+    if (runRuntime) runRuntime.running = false;
 
     let failed = 0;
-    for (const cleanup of RUNTIME.cleanups) {
+    const cleanups = runRuntime?.cleanups ?? RUNTIME.cleanups;
+    for (const cleanup of cleanups) {
         try { cleanup(); }
         catch (e: any) { failed++; logger.error("Cleanup function threw:", e); }
     }
-    RUNTIME.cleanups.clear();
+    cleanups.clear();
+    RUNTIME.cleanups = new Set<() => void>();
+    RUNTIME.skipped = new Set<string>();
 
     // Detach before clean(): the listener holds the patcher, and a settings change arriving
     // after teardown would re-enter a torn-down engine.
