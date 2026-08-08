@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 $env:COREPACK_ENABLE_DOWNLOAD_PROMPT = '0'
 $InstallDir = Join-Path $env:LOCALAPPDATA 'OrionVencord'
 $PluginSrc  = Join-Path $PSScriptRoot 'plugin'
+$PluginRepoUrl = 'https://github.com/nyxxbit/discord-quest-completer'
 
 function Info($m) { Write-Host $m -ForegroundColor Cyan }
 function Good($m) { Write-Host $m -ForegroundColor Green }
@@ -34,11 +35,42 @@ if ($pc -ne 0) {
     Step 'git reset' { git -C $InstallDir reset --hard --quiet FETCH_HEAD }
 }
 
-Info "Refreshing the plugin..."
+Info "Updating the plugin..."
 $dest = Join-Path $InstallDir 'src\userplugins\orionQuests'
-if (Test-Path $dest) { Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue }
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item (Join-Path $PluginSrc '*') $dest -Recurse -Force
+
+# Installs from v4.10.4 onward have the plugin as its own git checkout, so pull it. Older
+# installs have a plain copied folder with no .git, and for those the only source of a newer
+# plugin is the zip this script sits in, which is why UPDATE.cmd used to silently keep people
+# on the version they first downloaded. Convert those to a clone on the spot so it is the last
+# time it happens.
+$pulled = $false
+if (Test-Path (Join-Path $dest '.git')) {
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    git -C $dest pull --ff-only --quiet
+    if ($LASTEXITCODE -ne 0) {
+        git -C $dest fetch --depth 1 --quiet origin HEAD
+        git -C $dest reset --hard --quiet FETCH_HEAD
+    }
+    $pulled = $LASTEXITCODE -eq 0
+    $ErrorActionPreference = $prev
+    if ($pulled) { Good "  Plugin updated from git." }
+}
+
+if (-not $pulled) {
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    if (Test-Path $dest) { Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue }
+    git clone --depth 1 --quiet $PluginRepoUrl $dest 2>&1 | Out-Null
+    $ok = ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $dest 'index.tsx')))
+    $ErrorActionPreference = $prev
+    if ($ok) {
+        Good "  Plugin converted to a git checkout; future updates pull automatically."
+    } else {
+        Warn "  Couldn't reach GitHub for the plugin, using the copy in this zip instead."
+        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue }
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Copy-Item (Join-Path $PluginSrc '*') $dest -Recurse -Force
+    }
+}
 
 Push-Location $InstallDir
 try {

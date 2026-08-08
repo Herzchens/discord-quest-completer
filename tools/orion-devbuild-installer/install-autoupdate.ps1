@@ -25,6 +25,9 @@ $env:COREPACK_ENABLE_DOWNLOAD_PROMPT = '0'
 $InstallDir = Join-Path $env:LOCALAPPDATA 'OrionVencord'
 $PluginSrc  = Join-Path $PSScriptRoot 'plugin'
 $RepoUrl    = 'https://github.com/Vendicated/Vencord'
+# The plugin repo's root IS the plugin (moved there in v4.9.7 for exactly this), so it can be
+# cloned straight into src/userplugins and pulled on later updates.
+$PluginRepoUrl = 'https://github.com/nyxxbit/discord-quest-completer'
 
 function Info($m) { Write-Host $m -ForegroundColor Cyan }
 function Good($m) { Write-Host $m -ForegroundColor Green }
@@ -128,12 +131,32 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
     Step 'git clone' { git clone --depth 1 --quiet $RepoUrl $InstallDir }
 }
 
-# ---- 3. drop the plugin into src/userplugins (clean each run) -------------------
+# ---- 3. drop the plugin into src/userplugins ------------------------------------
+# Clone it rather than copy it. Copying froze whoever installed on the version their zip
+# happened to ship, because UPDATE.cmd re-copied that same folder every time: it pulled
+# Vencord and then put the old plugin straight back. Cloning gives the plugin its own git
+# checkout, so UPDATE.cmd can pull it like any other repo and a user is never stranded on
+# the release they first downloaded. Falls back to the bundled copy when git cannot reach
+# GitHub, so an offline or firewalled install still ends up with a working plugin.
 Info "[3/6] Adding the OrionQuests plugin..."
 $dest = Join-Path $InstallDir 'src\userplugins\orionQuests'
 if (Test-Path $dest) { Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue }
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item (Join-Path $PluginSrc '*') $dest -Recurse -Force
+
+$cloned = $false
+$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+git clone --depth 1 --quiet $PluginRepoUrl $dest 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $dest 'index.tsx'))) { $cloned = $true }
+$ErrorActionPreference = $prev
+
+if ($cloned) {
+    Good "  Plugin cloned from $PluginRepoUrl (UPDATE.cmd will keep it current)."
+} else {
+    Warn "  Couldn't clone the plugin, falling back to the copy in this zip."
+    Warn "  UPDATE.cmd will keep Vencord current but not the plugin, so re-download the zip for new Orion releases."
+    if (Test-Path $dest) { Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    Copy-Item (Join-Path $PluginSrc '*') $dest -Recurse -Force
+}
 
 # ---- 4. install deps + 5. build ------------------------------------------------
 Push-Location $InstallDir

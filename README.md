@@ -1,6 +1,6 @@
 # Orion
 
-[![Version](https://img.shields.io/badge/v4.10.3-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
+[![Version](https://img.shields.io/badge/v4.10.4-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -139,6 +139,11 @@ Bug reports, PRs and docs all welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has 
 ---
 
 ## Changelog
+
+### v4.10.4
+- **A stopped run could keep working after you started a new one** ([#58](https://github.com/nyxxbit/discord-quest-completer/pull/58), by [@Herzchens](https://github.com/Herzchens)). The plugin tracked "is the engine up" with a single module-level flag. A video or activity task can still be sitting inside a sleep when you run `/orion stop`, and if you started again before it woke, that flag was back to `true` and the old task simply carried on as though its own run had never ended. The old run's teardown could also stop the new one. Each start now gets its own runtime and generation id, and every callback is bound to the generation that created it. Reproduced on the wire before merging: stop a video quest mid-sleep, start a second run that cannot see that quest, and the old run still posted progress for it twice, at 15 and 24 seconds after the restart. With the fix, none.
+- **The installer verified the wrong Discord when you only have PTB or Canary** ([#57](https://github.com/nyxxbit/discord-quest-completer/pull/57), by [@Herzchens](https://github.com/Herzchens)). It detects the flavor correctly and patches the right one, but the post-inject check always looked in `%LOCALAPPDATA%\Discord`. On a machine without Stable it found nothing, decided the patch had failed, and rolled back a perfectly good install. Confirmed against the real filesystem for all four layouts: Canary-only and PTB-only rolled back before the fix and verify cleanly after, Stable is unaffected.
+- **`UPDATE.cmd` never actually updated Orion.** It pulled Vencord, then copied the plugin back out of the `plugin\` folder inside the zip you originally extracted, so it reinstalled the same version every time and quietly pinned you to whatever release you first downloaded ([#56](https://github.com/nyxxbit/discord-quest-completer/issues/56)). The installer now clones the plugin as its own git checkout and `UPDATE.cmd` pulls it, so new releases arrive without re-downloading anything. Existing installs are converted the first time you run the new `UPDATE.cmd`. Both fall back to the bundled copy if GitHub is unreachable, and say so.
 
 ### v4.10.3
 - **The `orion-vencord-bundle` zip now ships the full GPL text and says where its source is.** That bundle is a compiled build of Vencord with our plugin inside it, and Vencord is GPL-3.0-or-later, so handing someone the zip is conveying GPL software. It already carried Vencord's copyright and licensing notice, which esbuild emits into `dist/*.LEGAL.txt`, but not the full licence text that GPL section 4 asks you to convey alongside the program, and nothing in it stated where the corresponding source could be had. The zip now includes `LICENSE-VENCORD.txt` and a README section naming the licence, the upstream repository and the exact build command used, and the packaging script refuses to build a bundle missing any of that.
