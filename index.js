@@ -1545,6 +1545,7 @@
                         fetch(`${this._relayUrl}/health`, { method: 'GET', redirect: 'error' }),
                         new Promise((_, reject) => setTimeout(() => reject(new Error('probe timeout')), 800))
                     ]);
+                    if (!RUNTIME.running) return false;
                     if (r.ok) Logger.log('[Bypass] Orion Relay detected on 127.0.0.1:43210.', 'info');
                     return r.ok;
                 } catch (_) {
@@ -1557,7 +1558,9 @@
             // 1) Localhost relay (tools/orion-relay/). CSP allows http://127.0.0.1:*,
             //    the relay forwards to discordsays.com from outside the browser sandbox.
             //    This is the no-mod path: standalone userscript + tiny helper.
-            if (await this._probeRelay()) {
+            const relayAvailable = await this._probeRelay();
+            if (!RUNTIME.running) throw new Error('Shutdown');
+            if (relayAvailable) {
                 let r;
                 try {
                     r = await fetch(`${this._relayUrl}/proxy`, {
@@ -1566,15 +1569,22 @@
                         body: JSON.stringify({ url, headers, body: jsonBody }),
                         redirect: 'error'
                     });
+                    if (!RUNTIME.running) throw new Error('Shutdown');
                 } catch (e) {
+                    if (!RUNTIME.running) throw e;
                     // relay went away between probe and POST, so drop the cached answer and let
                     // the next transport try, instead of failing the whole bypass on a dead port
                     this._relayProbe = null;
                     Logger.log(`[Bypass] Relay stopped responding, trying other transports: ${e?.message ?? e}`, 'debug');
                 }
                 if (r) {
-                    if (!r.ok) throw { status: r.status, body: await r.text() };
+                    if (!r.ok) {
+                        const body = await r.text();
+                        if (!RUNTIME.running) throw new Error('Shutdown');
+                        throw { status: r.status, body };
+                    }
                     const result = await r.json();
+                    if (!RUNTIME.running) throw new Error('Shutdown');
                     if (!result.ok) throw { status: result.status, body: result.body };
                     return result;
                 }
@@ -1592,6 +1602,7 @@
                     if (u.pathname.endsWith('/acf/authorize')) {
                         const { code } = JSON.parse(jsonBody);
                         const r = await helper.discordsaysAuthorize({ appId, questId, authCode: code, referrer });
+                        if (!RUNTIME.running) throw new Error('Shutdown');
                         if (!r.ok) throw { status: r.status, body: r.body };
                         return { ok: true, status: r.status, body: r.body };
                     }
@@ -1599,11 +1610,13 @@
                         const { progress } = JSON.parse(jsonBody);
                         const token = headers['X-Auth-Token'];
                         const r = await helper.discordsaysProgress({ appId, questId, token, target: progress, referrer });
+                        if (!RUNTIME.running) throw new Error('Shutdown');
                         if (!r.ok) throw { status: r.status, body: r.body };
                         return { ok: true, status: r.status, body: r.body };
                     }
                 }
             } catch (e) {
+                if (!RUNTIME.running) throw e;
                 if (e?.status) throw e;
                 Logger.log(`[Bypass] VencordNative path errored: ${e?.message ?? e}`, 'debug');
             }
@@ -1623,16 +1636,20 @@
                     () => dn.app?.makeRequest,
                 ];
                 for (const probe of probes) {
+                    if (!RUNTIME.running) throw new Error('Shutdown');
                     try {
                         const fn = probe();
                         if (typeof fn === 'function') {
                             const r = await fn.call(dn, { method: 'POST', url, headers, body: jsonBody });
+                            if (!RUNTIME.running) throw new Error('Shutdown');
                             if (r && (r.status || r.statusCode)) {
                                 const status = r.status ?? r.statusCode;
                                 return { ok: status >= 200 && status < 300, status, body: r.body ?? r.responseText ?? '' };
                             }
                         }
-                    } catch (_) { /* try next probe */ }
+                    } catch (e) {
+                        if (!RUNTIME.running) throw e;
+                    }
                 }
             }
 
@@ -1640,8 +1657,11 @@
             //    CSP-blocked on Discord Desktop: throws TypeError "Failed to fetch".
             //    redirect:'error' so a 3xx from discordsays can't bounce our auth token
             //    and proxy-ticket Referer to an arbitrary host.
+            if (!RUNTIME.running) throw new Error('Shutdown');
             const res = await fetch(url, { method: 'POST', headers, body: jsonBody, redirect: 'error' });
+            if (!RUNTIME.running) throw new Error('Shutdown');
             const body = await res.text();
+            if (!RUNTIME.running) throw new Error('Shutdown');
             if (!res.ok) throw { status: res.status, body };
             return { ok: true, status: res.status, body };
         },
@@ -1671,8 +1691,10 @@
             let preGrantIds;
             try {
                 const before = await Mods.API.get({ url: '/oauth2/tokens' });
+                if (!RUNTIME.running) return false;
                 preGrantIds = new Set((before?.body || []).filter(tk => tk.application?.id === appId).map(tk => tk.id));
             } catch (e) {
+                if (!RUNTIME.running) return false;
                 Logger.log(`[Bypass] Couldn't snapshot existing grants; aborting so we never leave an un-revocable authorization: ${e?.message}`, 'warn');
                 return false;
             }
@@ -1683,8 +1705,16 @@
                 // decline aborts before the irreversible authorize. preGrantIds is already a
                 // Set here (snapshot failure returned above), so no grant leaks on decline.
                 let appName = null;
-                try { const a = await Mods.API.get({ url: `/applications/public?application_ids=${appId}` }); appName = a?.body?.[0]?.name ?? null; } catch (_) { }
-                if (!(await Consent.ask(appId, appName))) {
+                try {
+                    const a = await Mods.API.get({ url: `/applications/public?application_ids=${appId}` });
+                    if (!RUNTIME.running) return false;
+                    appName = a?.body?.[0]?.name ?? null;
+                } catch (_) {
+                    if (!RUNTIME.running) return false;
+                }
+                const consented = await Consent.ask(appId, appName);
+                if (!RUNTIME.running) return false;
+                if (!consented) {
                     Logger.log(`[Bypass] Consent declined for "${t.name}". Not authorizing the app.`, 'warn');
                     return false;
                 }
@@ -1705,12 +1735,14 @@
                         location_context: { guild_id: '10000', channel_id: '10000', channel_type: 10000 }
                     }
                 });
+                if (!RUNTIME.running) return false;
                 const location = authRes?.body?.location;
                 if (!location) throw new Error('no location in /oauth2/authorize response');
                 const authCode = new URL(location).searchParams.get('code');
                 if (!authCode) throw new Error('no code in authorize location');
 
                 const ticketRes = await Mods.API.post({ url: `/applications/${appId}/proxy-tickets`, body: {} });
+                if (!RUNTIME.running) return false;
                 const proxyTicket = ticketRes?.body?.ticket;
                 if (!proxyTicket) throw new Error('no proxy ticket');
 
@@ -1721,6 +1753,7 @@
                     { 'Content-Type': 'application/json', 'X-Auth-Token': '', 'X-Discord-Quest-ID': q.id, 'Referer': referrer },
                     JSON.stringify({ code: authCode })
                 );
+                if (!RUNTIME.running) return false;
                 let dsToken;
                 try { dsToken = JSON.parse(dsAuthRes.body)?.token; }
                 catch { throw new Error('discordsays returned non-JSON: ' + String(dsAuthRes.body).slice(0, 120)); }
@@ -1731,10 +1764,12 @@
                     { 'Content-Type': 'application/json', 'X-Auth-Token': dsToken, 'X-Discord-Quest-ID': q.id, 'Referer': referrer },
                     JSON.stringify({ progress: t.target })
                 );
+                if (!RUNTIME.running) return false;
 
                 Logger.log(`[Bypass] Success. "${t.name}" completed via Discord Says.`, 'success');
                 return true;
             } catch (e) {
+                if (!RUNTIME.running) return false;
                 // Discord renderer CSP blocks connect-src to *.discordsays.com. fetch() throws
                 // TypeError "Failed to fetch" without a status. There's no userscript workaround
                 // for this: the bypass needs a main-process HTTP client (Vencord plugin native module).
@@ -1762,8 +1797,8 @@
                 return false;
             } finally {
                 // Revoke ONLY the grant we created, diffed against the pre-flow snapshot.
-                // Runs whether the progress call succeeded or threw, so a failed bypass
-                // never leaves the app authorized on the user's account.
+                // Deliberately not gated on RUNTIME.running: a request sent before STOP may
+                // already have created a grant that still needs compensating cleanup.
                 if (preGrantIds) {
                     try {
                         const after = await Mods.API.get({ url: '/oauth2/tokens' });
@@ -1797,6 +1832,7 @@
                 while (cur < t.target && RUNTIME.running) {
                     try {
                         const r = await Traffic.enqueue(`/quests/${q.id}/heartbeat`, beat);
+                        if (!RUNTIME.running) return;
                         cur = r?.body?.progress?.[t.keyName]?.value ?? r?.body?.progress?.ACHIEVEMENT_IN_ACTIVITY?.value ?? cur;
                         Logger.updateTask(q.id, { name: t.name, type: "ACHIEVEMENT", cur, max: t.target, status: "RUNNING" });
                         failCount = 0;
@@ -1807,6 +1843,7 @@
                             break;
                         }
                     } catch (e) {
+                        if (!RUNTIME.running) return;
                         failCount++;
                         const err = ErrorHandler.classify(e);
                         if (err.isClientError) {
@@ -1827,10 +1864,10 @@
             // heartbeat path failed or skipped, so try the Discord Says auth bypass
             if (!RUNTIME.running) return;
             const bypassed = await Tasks.bypassAchievement(q, t);
+            if (!RUNTIME.running) return;
             if (bypassed) return Tasks.finish(q, t);
 
             // both auto-paths failed: skip the quest. no more 25-min passive wait.
-            if (!RUNTIME.running) return;
             Logger.log(`[Task] Skipping "${t.name}". No auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`, 'warn');
             // The bypass records why it gave up, so pass that on rather than a bare
             // "Cannot auto-complete", which left nothing to act on.
