@@ -254,6 +254,19 @@ export class TaskRunner {
         const key = t.keyName || fallbackKey;
         const gameData = await this.fetchGameData(t.appId, t.name);
 
+        // Re-check after the await, not only before it. Fetching the app metadata is a network
+        // round trip, and a stop landing inside it used to let this continuation wake up and
+        // install a spoof for a run that had already torn down. That is not harmless: every
+        // Patcher captures the store methods it considers real when it is constructed, so a
+        // stale run installing on top of a newer one and then restoring its own snapshot wipes
+        // the newer run's wrappers. Reproduced live: run A held here, stopped, run B started
+        // and spoofed normally, then A resumed and B's fake game disappeared from
+        // RunningGameStore with the store back to pristine, leaving B running a quest Discord
+        // could no longer see. Since #58 each run owns its runtime, so a later start cannot
+        // flip this back to true, and there is no await between here and the synchronous
+        // executor below for a stop to interleave into.
+        if (!this.runtime.running) return;
+
         return new Promise<void>(resolve => {
             const pid = rnd(2500, 12500) * 4; // multiples of 4 (Windows NT kernel alignment)
             const game: FakeGame = {

@@ -5,7 +5,7 @@
 
     const CONFIG = {
         NAME: "Orion",
-        VERSION: "v4.10.4",
+        VERSION: "v4.10.5",
         THEME: "#5865F2",             // discord blurple
         SUCCESS: "#3BA55C",
         WARN: "#faa61a",
@@ -1384,6 +1384,11 @@
             // pin the task at 0 until the safety timer kills it.
             const key = t.keyName || fallbackKey;
             const gameData = await this.fetchGameData(t.appId, t.name);
+
+            // Re-check after the await, not only before it. Fetching the app metadata is a
+            // network round trip, and STOP landing inside it used to let this continuation
+            // wake up afterwards and patch the store for a run that had already torn down.
+            if (!RUNTIME.running) return;
 
             return new Promise(resolve => {
                 const pid = rnd(2500, 12500) * 4;

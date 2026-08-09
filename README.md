@@ -1,6 +1,6 @@
 # Orion
 
-[![Version](https://img.shields.io/badge/v4.10.4-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
+[![Version](https://img.shields.io/badge/v4.10.5-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -139,6 +139,9 @@ Bug reports, PRs and docs all welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has 
 ---
 
 ## Changelog
+
+### v4.10.5
+- **Stopping a game quest and starting again could silently kill the new run.** Reported by [@Herzchens](https://github.com/Herzchens) in [#60](https://github.com/nyxxbit/discord-quest-completer/issues/60). Before injecting a fake process, Orion fetches the app's metadata over the network, and it only checked whether the engine was still running *before* that request, never after. Stop landing inside that window let the old task wake up afterwards and patch the store on behalf of a run that had already torn down. That is worse than it sounds, because each run's patcher records the store methods it considers real when it is created: a stale run installing on top of a newer one and then restoring its own snapshot takes the newer run's patches with it. Reproduced live with two overlapping runs: run A held inside the metadata request and stopped, run B started and spoofed normally, then A resumed and B's fake game vanished from `RunningGameStore` with the store back to its unpatched state, leaving B running a quest Discord could no longer see. With the check added after the await, B's spoof survives A resuming and only goes away on its own stop. Fixed in both engines.
 
 ### v4.10.4
 - **A stopped run could keep working after you started a new one** ([#58](https://github.com/nyxxbit/discord-quest-completer/pull/58), by [@Herzchens](https://github.com/Herzchens)). The plugin tracked "is the engine up" with a single module-level flag. A video or activity task can still be sitting inside a sleep when you run `/orion stop`, and if you started again before it woke, that flag was back to `true` and the old task simply carried on as though its own run had never ended. The old run's teardown could also stop the new one. Each start now gets its own runtime and generation id, and every callback is bound to the generation that created it. Reproduced on the wire before merging: stop a video quest mid-sleep, start a second run that cannot see that quest, and the old run still posted progress for it twice, at 15 and 24 seconds after the restart. With the fix, none.
