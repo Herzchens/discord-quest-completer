@@ -475,8 +475,10 @@ export class TaskRunner {
         let preGrantIds: Set<string> | undefined;
         try {
             const before: any = await this.stores.API.get({ url: "/oauth2/tokens" });
+            if (!this.runtime.running) return false;
             preGrantIds = new Set((before?.body || []).filter((tk: any) => tk.application?.id === appId).map((tk: any) => tk.id));
         } catch (e: any) {
+            if (!this.runtime.running) return false;
             logger.warn(`[Bypass] Couldn't snapshot existing grants; aborting so we never leave an un-revocable authorization: ${e?.message}`);
             return false;
         }
@@ -498,12 +500,14 @@ export class TaskRunner {
                     location_context: { guild_id: "10000", channel_id: "10000", channel_type: 10000 }
                 }
             });
+            if (!this.runtime.running) return false;
             const location: string | undefined = authRes?.body?.location;
             if (!location) throw new Error("no location in /oauth2/authorize response");
             const authCode = new URL(location).searchParams.get("code");
             if (!authCode) throw new Error("no code in authorize location");
 
             const ticketRes: any = await this.stores.API.post({ url: `/applications/${appId}/proxy-tickets`, body: {} });
+            if (!this.runtime.running) return false;
             const proxyTicket: string | undefined = ticketRes?.body?.ticket;
             if (!proxyTicket) throw new Error("no proxy ticket");
 
@@ -511,6 +515,7 @@ export class TaskRunner {
 
             // CSP-exempt main-process fetch via the native module
             const dsAuthRes = await Native.discordsaysAuthorize({ appId, questId: q.id, authCode, referrer });
+            if (!this.runtime.running) return false;
             if (!dsAuthRes.ok) throw new Error(`discordsays authorize ${dsAuthRes.status}`);
             let dsToken: string | undefined;
             try { dsToken = (JSON.parse(dsAuthRes.body) as { token?: string }).token; }
@@ -518,11 +523,13 @@ export class TaskRunner {
             if (!dsToken) throw new Error("no discordsays token");
 
             const progRes = await Native.discordsaysProgress({ appId, questId: q.id, token: dsToken, target: t.target, referrer });
+            if (!this.runtime.running) return false;
             if (!progRes.ok) throw new Error(`discordsays progress ${progRes.status}`);
 
             logger.info(`[Bypass] Success. "${t.name}" completed via Discord Says.`);
             return true;
         } catch (e: any) {
+            if (!this.runtime.running) return false;
             const code = e?.body?.code;
             // 50165 = Cannot launch Age-Gated Activity: age-gated or delisted
             if (code === 50165) {
@@ -542,8 +549,8 @@ export class TaskRunner {
             return false;
         } finally {
             // Revoke ONLY the grant we created, diffed against the pre-flow snapshot.
-            // Runs whether progress succeeded or threw, so a failed bypass never leaves
-            // the app authorized on the user's account.
+            // Deliberately not gated on runtime.running: a request sent before STOP may
+            // already have created a grant that still needs compensating cleanup.
             if (preGrantIds) {
                 const snap = preGrantIds;
                 try {
@@ -576,6 +583,7 @@ export class TaskRunner {
             while (cur < t.target && this.runtime.running) {
                 try {
                     const r: any = await this.traffic.enqueue(`/quests/${q.id}/heartbeat`, beat);
+                    if (!this.runtime.running) return;
                     cur = r?.body?.progress?.[t.keyName]?.value ?? r?.body?.progress?.ACHIEVEMENT_IN_ACTIVITY?.value ?? cur;
                     this.cb.onProgress(q.id, { name: t.name, type: "ACHIEVEMENT", cur, max: t.target, status: "RUNNING" });
                     failCount = 0;
@@ -585,6 +593,7 @@ export class TaskRunner {
                         break;
                     }
                 } catch (e: any) {
+                    if (!this.runtime.running) return;
                     failCount++;
                     if (e?.status && [400, 403, 404, 409, 410].includes(e.status)) {
                         logger.warn(`[Achievement] Heartbeat rejected (HTTP ${e.status}). Falling back to bypass.`);
@@ -604,9 +613,8 @@ export class TaskRunner {
         // heartbeat failed or skipped, so try the discordsays OAuth bypass
         if (!this.runtime.running) return;
         const bypassed = await this.bypassAchievement(q, t);
-        if (bypassed) return this.cb.onComplete(q, t);
-
         if (!this.runtime.running) return;
+        if (bypassed) return this.cb.onComplete(q, t);
 
         // A bypass that never ran because the consent toggle is off is not the same as one
         // that ran and failed. Recorded separately so switching the toggle on returns the
