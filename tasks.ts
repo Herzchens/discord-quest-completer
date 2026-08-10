@@ -34,6 +34,12 @@ const MAX_TASK_FAILURES = 5;
 // blacklisted quest known to break enrollment
 const BLACKLISTED_QUEST_ID = "1412491570820812933";
 
+/** Outcome of one bypass attempt, so its diagnostics cannot be overwritten by another task. */
+export interface BypassResult {
+    ok: boolean;
+    reason: string | null;
+}
+
 export interface TaskCallbacks {
     onProgress: (id: string, info: { name: string; type: TaskType; cur: number; max: number; status: string; actionRequired?: string | null; reason?: string | null; }) => void;
     onComplete: (q: Quest, t: TaskInfo) => Promise<void>;
@@ -47,11 +53,6 @@ export class TaskRunner {
      * the setting on can put them back in play. See retryConsentSkipped().
      */
     public consentSkipped = new Set<string>();
-    /**
-     * Why the last bypass attempt gave up, so the ACHIEVEMENT handler can put a real reason
-     * on the failed row instead of "Cannot auto-complete". Reset at the start of every attempt.
-     */
-    private lastBypassFailure: string | null = null;
     private stores: Stores;
     private traffic: Traffic;
     private patcher: Patcher;
@@ -441,7 +442,17 @@ export class TaskRunner {
      *   4) POST {appId}.discordsays.com/.proxy/acf/quest/progress {progress: target}
      *   5) /oauth2/tokens + DELETE to clean up the grant
      */
-    async bypassAchievement(q: Quest, t: TaskInfo): Promise<boolean> {
+    /**
+     * Returns whether the bypass completed the quest, and when it did not, why.
+     *
+     * The reason used to live in a field on the TaskRunner, which is shared by every task the
+     * runner owns. ACHIEVEMENT tasks go into the same worker pool as games, so with
+     * gameConcurrency above 1 two of them run against the same runner: one records its reason,
+     * then sits in the grant-cleanup finally while the other enters here and resets the field,
+     * and the first reads back null or the other task's reason. Diagnostics for a single
+     * attempt belong to that attempt, so they come back as its return value (issue #61).
+     */
+    async bypassAchievement(q: Quest, t: TaskInfo): Promise<BypassResult> {
         // taskConfigV2 moved the app off config.application and onto the task, so reading the
         // legacy field alone resolves null on every current quest and this bailed out before it
         // ever tried. t.appId already carries whatever appIdFor resolved, so prefer it and keep
@@ -449,23 +460,24 @@ export class TaskRunner {
         // TaskInfo.appId is string | number (it carries a `?? 0` fallback), and this value is
         // interpolated into discordsays URLs, so normalise to string once here.
         const appId = String(t.appId || q.config?.application?.id || "");
-        this.lastBypassFailure = null;
+        let reason: string | null = null;
         if (!appId) {
-            this.lastBypassFailure = "this quest carries no application id, so there is nothing to authorize against";
-            return false;
+            reason = "this quest carries no application id, so there is nothing to authorize against";
+            return { ok: false, reason };
         }
         // Consent gate: the OAuth bypass authorizes a third-party app on the user's account.
         // It only runs when the user explicitly enabled it in settings (default off). The toggle
         // is the informed-consent gate and covers the non-interactive /orion start + Auto-Start paths.
         if (!settings.store.achievementBypass) {
             logger.info(`[Bypass] Achievement OAuth bypass is off in settings; skipping "${t.name}". Enable it in OrionQuests settings if you want it.`);
-            return false;
+            return { ok: false, reason };
         }
         // appId is interpolated straight into discordsays URLs. Refuse anything
         // non-numeric so a malformed/hostile id can't redirect the request elsewhere.
         if (!/^\d+$/.test(appId)) {
+            reason = `the quest's application id ("${appId}") is not numeric, so it was refused before any request went out`;
             logger.warn(`[Bypass] Refusing non-numeric appId "${appId}".`);
-            return false;
+            return { ok: false, reason };
         }
 
         // Snapshot the grants this app already has BEFORE we authorize, so cleanup
@@ -475,12 +487,12 @@ export class TaskRunner {
         let preGrantIds: Set<string> | undefined;
         try {
             const before: any = await this.stores.API.get({ url: "/oauth2/tokens" });
-            if (!this.runtime.running) return false;
+            if (!this.runtime.running) return { ok: false, reason };
             preGrantIds = new Set((before?.body || []).filter((tk: any) => tk.application?.id === appId).map((tk: any) => tk.id));
         } catch (e: any) {
-            if (!this.runtime.running) return false;
+            if (!this.runtime.running) return { ok: false, reason };
             logger.warn(`[Bypass] Couldn't snapshot existing grants; aborting so we never leave an un-revocable authorization: ${e?.message}`);
-            return false;
+            return { ok: false, reason };
         }
 
         try {
@@ -500,14 +512,14 @@ export class TaskRunner {
                     location_context: { guild_id: "10000", channel_id: "10000", channel_type: 10000 }
                 }
             });
-            if (!this.runtime.running) return false;
+            if (!this.runtime.running) return { ok: false, reason };
             const location: string | undefined = authRes?.body?.location;
             if (!location) throw new Error("no location in /oauth2/authorize response");
             const authCode = new URL(location).searchParams.get("code");
             if (!authCode) throw new Error("no code in authorize location");
 
             const ticketRes: any = await this.stores.API.post({ url: `/applications/${appId}/proxy-tickets`, body: {} });
-            if (!this.runtime.running) return false;
+            if (!this.runtime.running) return { ok: false, reason };
             const proxyTicket: string | undefined = ticketRes?.body?.ticket;
             if (!proxyTicket) throw new Error("no proxy ticket");
 
@@ -515,7 +527,7 @@ export class TaskRunner {
 
             // CSP-exempt main-process fetch via the native module
             const dsAuthRes = await Native.discordsaysAuthorize({ appId, questId: q.id, authCode, referrer });
-            if (!this.runtime.running) return false;
+            if (!this.runtime.running) return { ok: false, reason };
             if (!dsAuthRes.ok) throw new Error(`discordsays authorize ${dsAuthRes.status}`);
             let dsToken: string | undefined;
             try { dsToken = (JSON.parse(dsAuthRes.body) as { token?: string }).token; }
@@ -523,19 +535,19 @@ export class TaskRunner {
             if (!dsToken) throw new Error("no discordsays token");
 
             const progRes = await Native.discordsaysProgress({ appId, questId: q.id, token: dsToken, target: t.target, referrer });
-            if (!this.runtime.running) return false;
+            if (!this.runtime.running) return { ok: false, reason };
             if (!progRes.ok) throw new Error(`discordsays progress ${progRes.status}`);
 
             logger.info(`[Bypass] Success. "${t.name}" completed via Discord Says.`);
-            return true;
+            return { ok: true, reason: null };
         } catch (e: any) {
-            if (!this.runtime.running) return false;
+            if (!this.runtime.running) return { ok: false, reason };
             const code = e?.body?.code;
             // 50165 = Cannot launch Age-Gated Activity: age-gated or delisted
             if (code === 50165) {
-                this.lastBypassFailure = "the activity is age-gated or delisted, so Discord refuses the proxy ticket on this account";
+                reason = "the activity is age-gated or delisted, so Discord refuses the proxy ticket on this account";
                 logger.warn(`[Bypass] "${t.name}" can't be launched (age-gated or delisted). Discord blocks the proxy ticket, so there is nothing we can do.`);
-                return false;
+                return { ok: false, reason };
             }
             const parts: string[] = [];
             if (e?.status) parts.push(`HTTP ${e.status}`);
@@ -544,9 +556,9 @@ export class TaskRunner {
             else if (e?.message) parts.push(e.message);
             else if (typeof e === "string") parts.push(e);
             else if (e) { try { parts.push(JSON.stringify(e).slice(0, 200)); } catch { parts.push(String(e)); } }
-            this.lastBypassFailure = `the Discord Says bypass failed (${parts.join(", ") || "unknown error"})`;
+            reason = `the Discord Says bypass failed (${parts.join(", ") || "unknown error"})`;
             logger.warn(`[Bypass] Failed: ${parts.join(", ") || "unknown"}`);
-            return false;
+            return { ok: false, reason };
         } finally {
             // Revoke ONLY the grant we created, diffed against the pre-flow snapshot.
             // Deliberately not gated on runtime.running: a request sent before STOP may
@@ -612,9 +624,9 @@ export class TaskRunner {
 
         // heartbeat failed or skipped, so try the discordsays OAuth bypass
         if (!this.runtime.running) return;
-        const bypassed = await this.bypassAchievement(q, t);
+        const bypass = await this.bypassAchievement(q, t);
         if (!this.runtime.running) return;
-        if (bypassed) return this.cb.onComplete(q, t);
+        if (bypass.ok) return this.cb.onComplete(q, t);
 
         // A bypass that never ran because the consent toggle is off is not the same as one
         // that ran and failed. Recorded separately so switching the toggle on returns the
@@ -629,7 +641,7 @@ export class TaskRunner {
         // The bypass records why it gave up, so pass that on instead of a bare
         // "Cannot auto-complete", which left the status with nothing to act on.
         logger.warn(`[Task] Skipping "${t.name}". No auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`);
-        return this.failTask(q, t, this.lastBypassFailure ?? "no auto-completion path worked");
+        return this.failTask(q, t, bypass.reason ?? "no auto-completion path worked");
     }
 
     /**

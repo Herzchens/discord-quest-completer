@@ -1187,9 +1187,6 @@
 
     const Tasks = {
         skipped: new Set(),  // quest IDs that returned 4xx, no point retrying
-        // Why the last bypass attempt gave up, so a failed achievement quest reports a real
-        // reason instead of "Cannot auto-complete". Reset at the start of every attempt.
-        lastBypassFailure: null,
         _streamReal: undefined,  // untouched StreamStore method, captured before the first spoof
         _streamSpoofs: 0,        // active STREAM tasks holding the spoof
 
@@ -1672,16 +1669,17 @@
             // before it ever tried. t.appId already carries whatever Tasks.appIdFor resolved,
             // so prefer it and keep the legacy read as the last fallback (issue #43).
             const appId = t.appId || q.config?.application?.id;
-            Tasks.lastBypassFailure = null;
+            let reason = null;
             if (!appId) {
-                Tasks.lastBypassFailure = 'this quest carries no application id, so there is nothing to authorize against';
-                return false;
+                reason = 'this quest carries no application id, so there is nothing to authorize against';
+                return { ok: false, reason };
             }
             // appId is interpolated straight into discordsays URLs. Refuse anything
             // non-numeric so a malformed/hostile id can't redirect the request elsewhere.
             if (!/^\d+$/.test(String(appId))) {
+                reason = `the quest's application id ("${appId}") is not numeric, so it was refused before any request went out`;
                 Logger.log(`[Bypass] Refusing non-numeric appId "${appId}".`, 'warn');
-                return false;
+                return { ok: false, reason };
             }
 
             // Snapshot the grants this app already has BEFORE we authorize, so cleanup
@@ -1691,12 +1689,12 @@
             let preGrantIds;
             try {
                 const before = await Mods.API.get({ url: '/oauth2/tokens' });
-                if (!RUNTIME.running) return false;
+                if (!RUNTIME.running) return { ok: false, reason };
                 preGrantIds = new Set((before?.body || []).filter(tk => tk.application?.id === appId).map(tk => tk.id));
             } catch (e) {
-                if (!RUNTIME.running) return false;
+                if (!RUNTIME.running) return { ok: false, reason };
                 Logger.log(`[Bypass] Couldn't snapshot existing grants; aborting so we never leave an un-revocable authorization: ${e?.message}`, 'warn');
-                return false;
+                return { ok: false, reason };
             }
 
             try {
@@ -1707,16 +1705,16 @@
                 let appName = null;
                 try {
                     const a = await Mods.API.get({ url: `/applications/public?application_ids=${appId}` });
-                    if (!RUNTIME.running) return false;
+                    if (!RUNTIME.running) return { ok: false, reason };
                     appName = a?.body?.[0]?.name ?? null;
                 } catch (_) {
-                    if (!RUNTIME.running) return false;
+                    if (!RUNTIME.running) return { ok: false, reason };
                 }
                 const consented = await Consent.ask(appId, appName);
-                if (!RUNTIME.running) return false;
+                if (!RUNTIME.running) return { ok: false, reason };
                 if (!consented) {
                     Logger.log(`[Bypass] Consent declined for "${t.name}". Not authorizing the app.`, 'warn');
-                    return false;
+                    return { ok: false, reason };
                 }
 
                 Logger.log(`[Bypass] Trying Discord Says auth flow for "${t.name}"...`, 'info');
@@ -1735,14 +1733,14 @@
                         location_context: { guild_id: '10000', channel_id: '10000', channel_type: 10000 }
                     }
                 });
-                if (!RUNTIME.running) return false;
+                if (!RUNTIME.running) return { ok: false, reason };
                 const location = authRes?.body?.location;
                 if (!location) throw new Error('no location in /oauth2/authorize response');
                 const authCode = new URL(location).searchParams.get('code');
                 if (!authCode) throw new Error('no code in authorize location');
 
                 const ticketRes = await Mods.API.post({ url: `/applications/${appId}/proxy-tickets`, body: {} });
-                if (!RUNTIME.running) return false;
+                if (!RUNTIME.running) return { ok: false, reason };
                 const proxyTicket = ticketRes?.body?.ticket;
                 if (!proxyTicket) throw new Error('no proxy ticket');
 
@@ -1753,7 +1751,7 @@
                     { 'Content-Type': 'application/json', 'X-Auth-Token': '', 'X-Discord-Quest-ID': q.id, 'Referer': referrer },
                     JSON.stringify({ code: authCode })
                 );
-                if (!RUNTIME.running) return false;
+                if (!RUNTIME.running) return { ok: false, reason };
                 let dsToken;
                 try { dsToken = JSON.parse(dsAuthRes.body)?.token; }
                 catch { throw new Error('discordsays returned non-JSON: ' + String(dsAuthRes.body).slice(0, 120)); }
@@ -1764,26 +1762,26 @@
                     { 'Content-Type': 'application/json', 'X-Auth-Token': dsToken, 'X-Discord-Quest-ID': q.id, 'Referer': referrer },
                     JSON.stringify({ progress: t.target })
                 );
-                if (!RUNTIME.running) return false;
+                if (!RUNTIME.running) return { ok: false, reason };
 
                 Logger.log(`[Bypass] Success. "${t.name}" completed via Discord Says.`, 'success');
-                return true;
+                return { ok: true, reason: null };
             } catch (e) {
-                if (!RUNTIME.running) return false;
+                if (!RUNTIME.running) return { ok: false, reason };
                 // Discord renderer CSP blocks connect-src to *.discordsays.com. fetch() throws
                 // TypeError "Failed to fetch" without a status. There's no userscript workaround
                 // for this: the bypass needs a main-process HTTP client (Vencord plugin native module).
                 if (e instanceof TypeError && /failed to fetch|networkerror/i.test(e.message)) {
                     Logger.log(`[Bypass] Discord's CSP blocks the script from reaching discordsays.com. Use the Vencord plugin port for the auto-bypass, since a userscript cannot bypass CSP. Skipping "${t.name}".`, 'warn');
-                    return false;
+                    return { ok: false, reason };
                 }
                 // Discord's API client rejects with {status, body:{code,message}}, not Error, so stringify properly
                 const code = e?.body?.code;
                 // 50165 = Cannot launch Age-Gated Activity: age-gated or delisted
                 if (code === 50165) {
-                    Tasks.lastBypassFailure = 'the activity is age-gated or delisted, so Discord refuses the proxy ticket on this account';
+                    reason = 'the activity is age-gated or delisted, so Discord refuses the proxy ticket on this account';
                     Logger.log(`[Bypass] "${t.name}" can't be launched (age-gated or delisted). Discord blocks the proxy ticket, so there is nothing we can do.`, 'warn');
-                    return false;
+                    return { ok: false, reason };
                 }
                 const parts = [];
                 if (e?.status) parts.push(`HTTP ${e.status}`);
@@ -1792,9 +1790,9 @@
                 else if (e?.message) parts.push(e.message);
                 else if (typeof e === 'string') parts.push(e);
                 else if (e) { try { parts.push(JSON.stringify(e).slice(0, 200)); } catch { parts.push(String(e)); } }
-                Tasks.lastBypassFailure = `the Discord Says bypass failed (${parts.join(', ') || 'unknown error'})`;
+                reason = `the Discord Says bypass failed (${parts.join(', ') || 'unknown error'})`;
                 Logger.log(`[Bypass] Failed: ${parts.join(', ') || 'unknown'}`, 'warn');
-                return false;
+                return { ok: false, reason };
             } finally {
                 // Revoke ONLY the grant we created, diffed against the pre-flow snapshot.
                 // Deliberately not gated on RUNTIME.running: a request sent before STOP may
@@ -1863,15 +1861,15 @@
 
             // heartbeat path failed or skipped, so try the Discord Says auth bypass
             if (!RUNTIME.running) return;
-            const bypassed = await Tasks.bypassAchievement(q, t);
+            const bypass = await Tasks.bypassAchievement(q, t);
             if (!RUNTIME.running) return;
-            if (bypassed) return Tasks.finish(q, t);
+            if (bypass.ok) return Tasks.finish(q, t);
 
             // both auto-paths failed: skip the quest. no more 25-min passive wait.
             Logger.log(`[Task] Skipping "${t.name}". No auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`, 'warn');
             // The bypass records why it gave up, so pass that on rather than a bare
             // "Cannot auto-complete", which left nothing to act on.
-            return Tasks.failTask(q, t, Tasks.lastBypassFailure ?? 'no auto-completion path worked');
+            return Tasks.failTask(q, t, bypass.reason ?? 'no auto-completion path worked');
         },
 
         // heartbeat loop against a voice channel to simulate activity participation
