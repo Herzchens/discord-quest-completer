@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes how Orion is structured internally. It is intended for contributors and the curious, not as a user guide. Last reviewed against `index.js` **v4.10.5**.
+This document describes how Orion is structured internally. It is intended for contributors and the curious, not as a user guide. Last reviewed against `index.js` **v4.10.6**.
 
 ## High-level overview
 
@@ -139,7 +139,18 @@ A main-process IPC bridge that performs the CSP-exempt discordsays POSTs for the
 
 ## Traffic layer
 
-`Traffic.enqueue(path, body)` is the single egress point for every quest-related HTTP call: FIFO with jittered gaps, exponential backoff on `429` (Retry-After aware), retries on `5xx` up to `SYS.MAX_RETRIES`, and `4xx` propagated to callers. On shutdown, queued and deferred requests are rejected so awaiters never hang.
+`Traffic.enqueue(path, body)` carries the calls that report progress to the quest API: FIFO with jittered gaps, exponential backoff on `429` (Retry-After aware), retries on `5xx` up to `SYS.MAX_RETRIES`, and `4xx` propagated to callers. On shutdown, queued and deferred requests are rejected so awaiters never hang.
+
+It is not the only egress point, and an earlier revision of this document was wrong to say it was. The queue issues `POST` only, so it covers exactly three endpoints:
+
+| through the queue | direct |
+| --- | --- |
+| `POST /quests/{id}/enroll` | `GET /applications/public` (game metadata, and the same lookup inside the bypass) |
+| `POST /quests/{id}/heartbeat` | `POST /quests/{id}/claim-reward` |
+| `POST /quests/{id}/video-progress` | the whole OAuth chain: `GET`/`DELETE /oauth2/tokens`, `POST /oauth2/authorize`, `POST /applications/{id}/proxy-tickets` |
+| | the raw `fetch()` calls to the local relay and to `*.discordsays.com` |
+
+The pacing that matters for looking like a normal client is on the progress reports, which are the repeated, patterned calls. The direct ones fire once per task and are shaped like the actions a user takes by hand, so they are not queued. Anything new that reports progress on a loop belongs in the queue.
 
 ## Cleanup lifecycle
 
