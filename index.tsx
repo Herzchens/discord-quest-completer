@@ -13,6 +13,7 @@ import definePlugin from "@utils/types";
 import { setWatchForEnrollmentsHook } from "./hooks";
 import {
     getCurrentUserId,
+    getLastRunOutcome,
     getQuestStore,
     getUserStore,
     isEngineRunning,
@@ -29,6 +30,14 @@ import {
 import { repairSuppressedPresence } from "./patcher";
 import { resolveQuestTarget } from "./questTarget";
 import { settings } from "./settings";
+
+/**
+ * Mirrors index.js CONFIG.VERSION. The plugin carried no version at all, so a bug report could
+ * not say which build it came from and neither could the person triaging it (issue #66).
+ * tools/package-release.ps1 refuses to package if this and the userscript disagree.
+ */
+export const PLUGIN_VERSION = "v4.10.7";
+
 
 /*
  * Enrollment watcher.
@@ -159,7 +168,28 @@ async function ensureStart(): Promise<string> {
     // watcher lifetime requested by the setting.
     armWatcher();
     if (isEngineRunning()) return "Already running.";
-    startOrion();
+    // startOrion() resolves when the whole run is over, so it is normally left unawaited: a run
+    // lasts as long as its quests do. A run with nothing to do is the exception, and answering
+    // "Started." for that leaves someone looking at a command that appears to have done nothing
+    // (issue #66). Race the run against a short deadline: an empty run loses the race almost
+    // immediately and its reason is reported, while a real run just costs the deadline once.
+    //
+    // The deadline is needed. Checking once after the call was tried and it reports "Started."
+    // for an empty run about as often as not, because the first scan is not reliably finished by
+    // then. Polling until the engine stops was also tried and cost 2.2s on every healthy start,
+    // since a healthy start is exactly the case that never exits the poll early.
+    const run = startOrion().then(() => true, () => true);
+    const endedImmediately = await Promise.race([
+        run,
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 400)),
+    ]);
+
+    if (endedImmediately) {
+        const outcome = getLastRunOutcome();
+        return outcome
+            ? `Started, then stopped straight away: ${outcome}`
+            : "Started, then stopped straight away. The console says why.";
+    }
     return "Started.";
 }
 
@@ -229,7 +259,12 @@ async function ensureReadyStop(): Promise<string> {
 function statusSummary(): string {
     const running = isEngineRunning();
     const entries = readDashboard();
-    if (!running && entries.length === 0) return "Idle. Use `/orion start` to begin.";
+    if (!running && entries.length === 0) {
+        const outcome = getLastRunOutcome();
+        return outcome
+            ? `Orion ${PLUGIN_VERSION} idle: ${outcome}\nUse \`/orion start\` to try again.`
+            : `Orion ${PLUGIN_VERSION} idle. Use \`/orion start\` to begin.`;
+    }
     if (entries.length === 0) return running ? "Running. No active tasks yet." : "Idle.";
 
     const tally = new Map<string, number>();
@@ -261,7 +296,7 @@ function statusSummary(): string {
         return `• ${e.name}: ${e.status} (${pct}%)${waiting}${why}${reward}`;
     });
 
-    const header = `${running ? "Running" : "Stopped"}, ${entries.length} task(s): ${breakdown}`;
+    const header = `Orion ${PLUGIN_VERSION} ${running ? "running" : "stopped"}, ${entries.length} task(s): ${breakdown}`;
     const footer = claimable > 0
         ? [`${claimable} reward(s) waiting. Claim them on Discord's Quests page, or turn on "Try to claim reward" to have Orion attempt it (claiming often triggers a captcha).`]
         : [];
@@ -378,6 +413,7 @@ async function controlQuestById(questId: string, action: "pause" | "resume"): Pr
 
 export default definePlugin({
     name: "OrionQuests",
+    version: PLUGIN_VERSION,
     description:
         "Auto-completes Discord Quests: game, video, stream, activity, and achievement.",
     authors: [{ name: "syntt_", id: 1419678867005767783n }],

@@ -4,9 +4,9 @@
   This exists because the packaging steps are easy to get wrong in ways nothing catches
   until a user reports it:
 
-    - the version lives in six places and they drift (README badge, README headline,
-      index.js CONFIG.VERSION, docs/ARCHITECTURE.md, docs/VENCORD-PLUGIN.md,
-      the devbuild installer README)
+    - the version lives in six places and they drift (index.js CONFIG.VERSION, which is the
+      one read here, plus the README badge, index.tsx PLUGIN_VERSION, docs/ARCHITECTURE.md,
+      docs/VENCORD-PLUGIN.md and the devbuild installer README)
     - the Tier 1 bundle MUST be built --standalone --disable-updater. A plain build drops a
       git-updater dist into the non-git %APPDATA%\Vencord and Vencord errors on every launch
       (issue #39); --standalone alone is worse, its HTTP updater silently reverts the dist to
@@ -46,6 +46,9 @@ $checks = @(
     @{ File = 'docs/VENCORD-PLUGIN.md';                 Pattern = "in sync with userscript $Version" }
     @{ File = 'docs/ARCHITECTURE.md';                   Pattern = "Last reviewed against .index\.js. \*\*$Version\*\*" }
     @{ File = 'tools/orion-devbuild-installer/README.txt'; Pattern = "Version: $Version" }
+    # The plugin carries its own version since v4.10.7. Before that a plugin user could not say
+    # which build a bug report came from, and neither could anyone triaging it (issue #66).
+    @{ File = 'index.tsx';                              Pattern = "PLUGIN_VERSION = ""$Version""" }
 )
 $drift = @()
 foreach ($c in $checks) {

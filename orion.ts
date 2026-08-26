@@ -98,6 +98,13 @@ let tasks: TaskRunner | null = null;
 let questStore: any = null;
 let userStore: any = null;
 let sessionOwnerUserId: string | null = null;
+/**
+ * Why the last run ended, when it ended on its own rather than by the user stopping it.
+ * `/orion start` answers before the first scan has happened, so a run with nothing to do
+ * reported success and was over a moment later, with the reason only in the console and no
+ * dashboard log to fall back on in the plugin (issue #66).
+ */
+let lastRunOutcome: string | null = null;
 let accountResetInProgress = false;
 
 function isRunActive(runId: number, runRuntime: OrionRuntime): boolean {
@@ -222,6 +229,10 @@ export function isEngineRunning(): boolean {
     // callers observing `true` during the gap before UserStore's change listener runs.
     reconcileSessionAccount();
     return RUNTIME.running;
+}
+
+export function getLastRunOutcome(): string | null {
+    return lastRunOutcome;
 }
 
 export function isQuestPaused(questId: string): boolean {
@@ -440,6 +451,7 @@ async function mainLoop(
             }
             if (currentUserId !== runUserId) {
                 logger.warn("[System] Discord account changed while Orion was running. Stopping and clearing account-scoped session state.");
+                lastRunOutcome = "the Discord account changed, so the run was stopped and its state cleared.";
                 resetForAccountChange();
                 return;
             }
@@ -449,6 +461,7 @@ async function mainLoop(
             const blockedUntil = enrollmentBlockedUntil(runStores.QuestStore);
             if (blockedUntil) {
                 logger.error(`[System] Discord has blocked quest enrollment on this account until ${blockedUntil.toLocaleString()}. Stopping instead of retrying.`);
+                lastRunOutcome = `Discord has blocked quest enrollment on this account until ${blockedUntil.toLocaleString()}, so nothing was started.`;
                 break;
             }
 
@@ -468,6 +481,9 @@ async function mainLoop(
 
             if (!active.length) {
                 logger.info("[System] All available quests are completed!");
+                lastRunOutcome = loopCount === 1
+                    ? "every quest you can run is already finished, so there was nothing to farm."
+                    : "every quest it could run is now finished.";
                 Sound.play("done");
                 break;
             }
@@ -652,9 +668,14 @@ export async function startOrion(): Promise<void> {
     // Reconcile account-owned session state before marking a new run active. Doing this after
     // activeRunId/RUNTIME are published could make the reconciliation stop the brand-new run and
     // then let its start continuation keep going.
+    // A new run owns the outcome from here on, so the previous one's reason cannot be read back
+    // as if it described this start.
+    lastRunOutcome = null;
+
     const startingUserId = reconcileSessionAccount();
     if (!startingUserId) {
         logger.error("Cannot start OrionQuests: current Discord user is unavailable.");
+        lastRunOutcome = "Discord did not report a logged-in user, so the engine could not start.";
         return;
     }
 
