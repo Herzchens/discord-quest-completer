@@ -167,7 +167,17 @@
     // expiresAt is occasionally missing/malformed mid-rollout. new Date(undefined) is NaN and
     // `NaN > now` is always false, which would silently drop the quest with no log. Treat an
     // unparseable expiry as "not expired" so we attempt the quest instead of hiding it.
-    const notExpired = q => { const e = new Date(q.config?.expiresAt ?? 0).getTime(); return Number.isNaN(e) || e > Date.now(); };
+    // Discord keeps its own expiry verdict in QuestStore, refreshed on every user-status update
+    // and rearmed by a timer, and its default when it has no entry is NOT expired. Ask it first
+    // and only fall back to reading the timestamp ourselves.
+    const notExpired = q => {
+        try {
+            const store = Mods.QuestStore;
+            if (typeof store?.isQuestExpired === 'function') return store.isQuestExpired(q.id) !== true;
+        } catch (_) { /* fall through to the timestamp */ }
+        const e = new Date(q.config?.expiresAt ?? 0).getTime();
+        return Number.isNaN(e) || e > Date.now();
+    };
 
     // The server-sealed attribution blob Discord echoes back when enrolling in or claiming a
     // quest. The server issues it per quest and ships it with the quest list; the client
@@ -184,13 +194,28 @@
     // client already fetches, so reading it costs nothing and adds no request. A block is the
     // clearest signal Discord gives that it has taken an interest in the account, and carrying
     // on through it is both futile and the worst available response to it.
-    const enrollmentBlockedUntil = () => {
+    // Console task keys. Discord groups them as CONSOLE and no desktop client can drive them.
+    const CONSOLE_ONLY_KEYS = new Set(['PLAY_ON_XBOX', 'PLAY_ON_PLAYSTATION']);
+
+    const futureDate = (raw) => {
         try {
-            const raw = Mods.QuestStore?.questEnrollmentBlockedUntil;
             if (!raw) return null;
             const when = raw instanceof Date ? raw : new Date(raw);
             return Number.isNaN(when.getTime()) || when.getTime() <= Date.now() ? null : when;
         } catch (_) { return null; }
+    };
+
+    const enrollmentBlockedUntil = () => futureDate(Mods.QuestStore?.questEnrollmentBlockedUntil);
+
+    // Discord returns this beside questEnrollmentBlockedUntil on the quest list fetch and its own
+    // client refuses to start any unfinished quest while it is set. Enrollment being blocked stops
+    // new quests; access being suspended stops everything.
+    const questAccessSuspendedUntil = () => {
+        const store = Mods.QuestStore;
+        if (!store) return null;
+        const explicit = futureDate(store.questAccessSuspendedUntil);
+        if (explicit) return explicit;
+        return store.isQuestAccessSuspended === true ? new Date(0) : null;
     };
 
     // Discord joins stream key parts with a colon and the trailing component is the stream
@@ -1221,19 +1246,29 @@
         //
         // The prefix entries still catch platform variants (PLAY_ON_XBOX, WATCH_VIDEO_ON_MOBILE)
         // and anything new Discord adds under the same families.
+        /*
+         * Task keys this client can actually drive. Most quests offer several: 38 of the 66 on a live
+         * account carry two or three, always a desktop key beside console or mobile variants. Matching
+         * by prefix and taking whichever the server happened to list first works only while the server
+         * keeps listing the desktop one first. If that order ever changes, Orion picks PLAY_ON_XBOX,
+         * injects a desktop process for it, reads progress under a key Discord never credits, and looks
+         * healthy for 25 minutes before timing out. Prefer the exact key, and refuse the console-only
+         * quests outright instead of pretending to run them.
+         */
         detectType(cfg, applicationId) {
             const taskKeys = Object.keys(cfg.tasks);
             const typeMap = [
                 { match: k => k === "ACHIEVEMENT_IN_ACTIVITY", type: "ACHIEVEMENT" },
                 { match: k => k === "PLAY_ACTIVITY", type: "ACTIVITY" },
-                { match: k => k.startsWith("STREAM"), type: "STREAM" },
-                { match: k => k.includes("VIDEO"), type: "WATCH_VIDEO" },
-                { match: k => k.startsWith("PLAY"), type: "GAME" },
+                { match: k => k.startsWith("STREAM"), type: "STREAM", prefer: ["STREAM_ON_DESKTOP"] },
+                { match: k => k.includes("VIDEO"), type: "WATCH_VIDEO", prefer: ["WATCH_VIDEO"] },
+                { match: k => k.startsWith("PLAY"), type: "GAME", prefer: ["PLAY_ON_DESKTOP"] },
                 { match: k => k.includes("ACTIVITY"), type: "ACTIVITY" }
             ];
 
-            for (const { match, type } of typeMap) {
-                const keyName = taskKeys.find(match);
+            for (const { match, type, prefer } of typeMap) {
+                const keyName = (prefer && taskKeys.find(k => prefer.includes(k)))
+                    || taskKeys.find(k => match(k) && !CONSOLE_ONLY_KEYS.has(k));
                 if (keyName) {
                     return {
                         type, keyName,
@@ -1242,6 +1277,9 @@
                     };
                 }
             }
+
+            // Every key was a console one, so there is nothing this client can do with the quest.
+            if (taskKeys.length > 0 && taskKeys.every(k => CONSOLE_ONLY_KEYS.has(k))) return null;
 
             if (applicationId) {
                 return {
@@ -2275,6 +2313,13 @@
                 // the quest list carries the timestamp. Checked every cycle rather than once
                 // at start, because the block can land mid-run, and running past it means
                 // hammering an endpoint that is already refusing us.
+                const suspendedUntil = questAccessSuspendedUntil();
+                if (suspendedUntil) {
+                    const when = suspendedUntil.getTime() === 0 ? 'for now' : `until ${suspendedUntil.toLocaleString()}`;
+                    Logger.log(`[System] Discord has suspended quest access on this account ${when}. Its own client refuses to start a quest in this state, so Orion stops too.`, 'err');
+                    break;
+                }
+
                 const blockedUntil = enrollmentBlockedUntil();
                 if (blockedUntil) {
                     Logger.log(`[System] Discord has blocked quest enrollment on this account until ${blockedUntil.toLocaleString()}. Stopping instead of retrying.`, 'err');

@@ -334,15 +334,35 @@ function loadStores(): Stores {
     return { QuestStore, RunStore, StreamStore, ChanStore, GuildChanStore, UserStore, Dispatcher, API };
 }
 
-function enrollmentBlockedUntil(questStoreForRun: any): Date | null {
+function futureDate(raw: any): Date | null {
     try {
-        const raw = questStoreForRun?.questEnrollmentBlockedUntil;
         if (!raw) return null;
         const when = raw instanceof Date ? raw : new Date(raw);
         return isNaN(when.getTime()) || when.getTime() <= Date.now() ? null : when;
     } catch {
         return null;
     }
+}
+
+function enrollmentBlockedUntil(questStoreForRun: any): Date | null {
+    return futureDate(questStoreForRun?.questEnrollmentBlockedUntil);
+}
+
+/**
+ * Discord returns this beside questEnrollmentBlockedUntil on the quest list fetch, and its own
+ * client refuses to start any unfinished quest while it is set. It is the harsher of the two:
+ * enrollment being blocked stops new quests, access being suspended stops everything. Orion used
+ * to read only the first, so a suspended account kept enrolling and heartbeating into failures
+ * and the user got a pile of generic errors instead of being told what had happened.
+ */
+function questAccessSuspendedUntil(questStoreForRun: any): Date | null {
+    const store = questStoreForRun;
+    if (!store) return null;
+    const explicit = futureDate(store.questAccessSuspendedUntil);
+    if (explicit) return explicit;
+    // The boolean is derived from the same value, but read it too: a suspension with no readable
+    // end date must still stop the run rather than fall through as "not suspended".
+    return store.isQuestAccessSuspended === true ? new Date(0) : null;
 }
 
 function getQuestsArray(store: any): Quest[] {
@@ -457,6 +477,14 @@ async function mainLoop(
             }
 
             logger.info(`[Cycle] Starting loop #${loopCount}...`);
+
+            const suspendedUntil = questAccessSuspendedUntil(runStores.QuestStore);
+            if (suspendedUntil) {
+                const when = suspendedUntil.getTime() === 0 ? "for now" : `until ${suspendedUntil.toLocaleString()}`;
+                logger.error(`[System] Discord has suspended quest access on this account ${when}. Its own client refuses to start a quest in this state, so Orion stops too.`);
+                lastRunOutcome = `Discord has suspended quest access on this account ${when}, so nothing was started.`;
+                break;
+            }
 
             const blockedUntil = enrollmentBlockedUntil(runStores.QuestStore);
             if (blockedUntil) {
@@ -729,7 +757,15 @@ export async function startOrion(): Promise<void> {
         let runTasks!: TaskRunner;
         runTasks = new TaskRunner(runStores, runTraffic, runPatcher, runRuntime, {
             onProgress: (id, info) => {
-                if (isRunActive(runId, runRuntime) && getCurrentUserId() === runUserId) setEntry(id, info);
+                // Null-tolerant, for the same reason isRunActive and taskLifecycle.isActive are:
+                // a momentary blank identity is an observation gap, not a different user. Strict
+                // equality here dropped the FAILED row that failTask had just written while
+                // failTask still added the quest to `skipped`, leaving a RUNNING row with no
+                // control behind it, which the scheduler then refuses to touch for the rest of
+                // the run. Two of the four account predicates were converted; these two were not.
+                if (isRunActive(runId, runRuntime) && !isConfirmedDifferentAccount(getCurrentUserId(), runUserId)) {
+                    setEntry(id, info);
+                }
             },
             onComplete: (q, t) => onTaskComplete(runId, runRuntime, runTasks, q, t),
         }, taskLifecycle);
@@ -740,7 +776,8 @@ export async function startOrion(): Promise<void> {
         tasks = runTasks;
 
         setAchievementBypassHook(enabled => {
-            if (!enabled || !isRunActive(runId, runRuntime) || getCurrentUserId() !== runUserId) return;
+            if (!enabled || !isRunActive(runId, runRuntime)) return;
+            if (isConfirmedDifferentAccount(getCurrentUserId(), runUserId)) return;
             const restored = runTasks.retryConsentSkipped();
             if (restored > 0) logger.info(`[Settings] Achievement bypass enabled, retrying ${restored} skipped quest(s) on the next cycle.`);
         });

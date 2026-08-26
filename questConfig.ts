@@ -34,3 +34,35 @@ export function selectQuestTaskConfig(config: any): any | null {
 
     return current ?? legacy ?? null;
 }
+
+/** Console task keys. Discord groups these as CONSOLE and no desktop client can drive them. */
+export const CONSOLE_ONLY_KEYS = new Set(["PLAY_ON_XBOX", "PLAY_ON_PLAYSTATION"]);
+
+export interface TaskKeyRule {
+    match: (key: string) => boolean;
+    /** Exact keys that win outright, whatever order the server listed them in. */
+    prefer?: string[];
+}
+
+/**
+ * Pick which task key of a quest this client should drive.
+ *
+ * Most quests offer several: 38 of the 66 on a live account carry two or three, always a desktop
+ * key beside console or mobile variants. Matching by prefix and taking whichever the server
+ * happened to list first works only for as long as the server keeps listing the desktop one
+ * first. If that order ever changes, Orion picks PLAY_ON_XBOX, injects a desktop process for it,
+ * reads progress under a key Discord never credits, and looks healthy until it times out
+ * 25 minutes later. So prefer the exact key and never match a console one.
+ */
+export function selectTaskKey(keys: string[], rule: TaskKeyRule): string | undefined {
+    if (rule.prefer) {
+        const exact = keys.find(key => rule.prefer!.includes(key));
+        if (exact) return exact;
+    }
+    return keys.find(key => rule.match(key) && !CONSOLE_ONLY_KEYS.has(key));
+}
+
+/** True when a quest offers nothing but console tasks, so this client cannot run it at all. */
+export function isConsoleOnly(keys: string[]): boolean {
+    return keys.length > 0 && keys.every(key => CONSOLE_ONLY_KEYS.has(key));
+}

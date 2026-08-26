@@ -12,7 +12,7 @@ import type { PluginNative } from "@utils/types";
 
 import { cleanupCreatedOAuthGrants } from "./oauthLifecycle";
 import type { Patcher } from "./patcher";
-import { taskEntries, taskForKey } from "./questConfig";
+import { isConsoleOnly, selectTaskKey, taskEntries, taskForKey } from "./questConfig";
 import { settings } from "./settings";
 import type { TaskLifecycle } from "./taskControl";
 import type { Traffic } from "./traffic";
@@ -24,6 +24,33 @@ const logger = new Logger("OrionQuests");
 const Native = VencordNative.pluginHelpers.OrionQuests as PluginNative<typeof import("./native")>;
 
 const HEARTBEAT_EVT = "QUESTS_SEND_HEARTBEAT_SUCCESS";
+/*
+ * Discord dispatches this when its own heartbeat POST fails, carrying the error and the quest id.
+ * The QuestStore reducer only records it when a streamKey is present, so a PLAY_ON_DESKTOP
+ * failure leaves no trace in any store and used to reach us only as 90 seconds of silence.
+ * Subscribing to the dispatch itself catches every task type and gives the real reason.
+ */
+const HEARTBEAT_FAIL_EVT = "QUESTS_SEND_HEARTBEAT_FAILURE";
+
+/**
+ * Pull something a user can act on out of a QUESTS_SEND_HEARTBEAT_FAILURE payload. Discord wraps
+ * the failure in its own error type, so the useful parts sit at different depths depending on
+ * whether the request got a response at all.
+ */
+function describeHeartbeatError(payload: any): string {
+    const e = payload?.error ?? payload;
+    const parts: string[] = [];
+    const status = e?.status ?? e?.httpStatus;
+    if (status) parts.push(`HTTP ${status}`);
+    const code = e?.body?.code ?? e?.code;
+    if (code != null && code !== status) parts.push(`code ${code}`);
+    const message = e?.body?.message ?? e?.message;
+    if (message) parts.push(String(message));
+    if (!parts.length) {
+        try { parts.push(JSON.stringify(e).slice(0, 160)); } catch { parts.push(String(e)); }
+    }
+    return parts.join(", ") || "no detail";
+}
 const MAX_TIME = 25 * 60 * 1000;
 const HEARTBEAT_GRACE = 90 * 1000;
 const MAX_TASK_FAILURES = 5;
@@ -141,19 +168,20 @@ export class TaskRunner {
 
     detectType(cfg: any, applicationId?: string): DetectedTask | null {
         const entries = taskEntries(cfg?.tasks);
-        const typeMap: Array<{ match: (k: string) => boolean; type: TaskType; }> = [
+        const typeMap: Array<{ match: (k: string) => boolean; type: TaskType; prefer?: string[]; }> = [
             { match: k => k === "ACHIEVEMENT_IN_ACTIVITY", type: "ACHIEVEMENT" },
             { match: k => k === "PLAY_ACTIVITY", type: "ACTIVITY" },
-            { match: k => k.startsWith("STREAM"), type: "STREAM" },
-            { match: k => k.includes("VIDEO"), type: "WATCH_VIDEO" },
-            { match: k => k.startsWith("PLAY"), type: "GAME" },
+            { match: k => k.startsWith("STREAM"), type: "STREAM", prefer: ["STREAM_ON_DESKTOP"] },
+            { match: k => k.includes("VIDEO"), type: "WATCH_VIDEO", prefer: ["WATCH_VIDEO"] },
+            { match: k => k.startsWith("PLAY"), type: "GAME", prefer: ["PLAY_ON_DESKTOP"] },
             { match: k => k.includes("ACTIVITY"), type: "ACTIVITY" },
         ];
 
-        for (const { match, type } of typeMap) {
-            const entry = entries.find(([key]) => match(key));
-            if (entry) {
-                const [keyName, task] = entry;
+        const keys = entries.map(([key]) => key);
+        for (const { match, type, prefer } of typeMap) {
+            const keyName = selectTaskKey(keys, { match, prefer });
+            if (keyName) {
+                const task = entries.find(([key]) => key === keyName)?.[1];
                 return {
                     type,
                     keyName,
@@ -162,6 +190,10 @@ export class TaskRunner {
                 };
             }
         }
+
+        // Every key was a console one, so there is nothing this client can do with the quest.
+        // Say that rather than falling through to the desktop guess below.
+        if (isConsoleOnly(keys)) return null;
 
         if (applicationId && entries.length > 0) {
             return {
@@ -300,6 +332,7 @@ export class TaskRunner {
             let watchdogTimer: number | undefined;
             let subscribed = false;
             let beats = 0;
+            let failures = 0;
 
             const finish = () => {
                 if (cleaned) return;
@@ -309,6 +342,8 @@ export class TaskRunner {
                 try { cleanupHook(); } catch (e: any) { debug(logger, `[Task] Cleanup: ${e?.message}`); }
                 if (subscribed) {
                     try { this.stores.Dispatcher?.unsubscribe(HEARTBEAT_EVT, check); }
+                    catch (e: any) { debug(logger, `[Dispatcher] Unsubscribe failed: ${e?.message}`); }
+                    try { this.stores.Dispatcher?.unsubscribe(HEARTBEAT_FAIL_EVT, onFail); }
                     catch (e: any) { debug(logger, `[Dispatcher] Unsubscribe failed: ${e?.message}`); }
                 }
                 this.removeCleanup(t, abort);
@@ -367,6 +402,7 @@ export class TaskRunner {
                 if (!this.isTaskActive(t)) { finish(); resolve(); return; }
                 if (d?.questId !== q.id) return;
                 beats++;
+                failures = 0;
                 armWatchdog();
                 const prog = this.readProgress(d.userStatus, key);
                 this.cb.onProgress(q.id, { name: t.name, type, cur: prog, max: t.target, status: "RUNNING" });
@@ -377,8 +413,26 @@ export class TaskRunner {
                 }
             };
 
+            // Discord retries a failed heartbeat, so one failure is not a verdict. Consecutive
+            // ones with nothing succeeding in between are, and saying so beats the watchdog's
+            // silence by up to 90 seconds and names the actual error instead of guessing.
+            const onFail = (d: any) => {
+                if (!this.isTaskActive(t)) { finish(); resolve(); return; }
+                if (d?.questId !== q.id) return;
+                if (++failures < MAX_TASK_FAILURES) {
+                    debug(logger, `[Task] Discord's heartbeat for "${t.name}" failed (${failures}/${MAX_TASK_FAILURES}): ${describeHeartbeatError(d)}`);
+                    return;
+                }
+                const why = describeHeartbeatError(d);
+                logger.error(`[Task] Discord's heartbeat for "${t.name}" failed ${failures} times in a row: ${why}. Giving up rather than waiting out the watchdog.`);
+                this.failTask(q, t, `Discord could not report progress (${why})`);
+                finish();
+                resolve();
+            };
+
             try {
                 this.stores.Dispatcher?.subscribe(HEARTBEAT_EVT, check);
+                this.stores.Dispatcher?.subscribe(HEARTBEAT_FAIL_EVT, onFail);
                 subscribed = true;
             } catch (e: any) {
                 if (this.isTaskActive(t)) this.failTask(q, t, `Heartbeat subscription failed: ${e?.message ?? e}`);
@@ -654,11 +708,32 @@ export class TaskRunner {
         }
     }
 
+    /**
+     * Whether a quest is past its end, answered the way Discord answers it.
+     *
+     * QuestStore.isQuestExpired is Discord's own verdict: it keeps an expiry map, refreshes it on
+     * every user-status update and rearms a timer for the next quest due to expire. Reading it is
+     * better than recomputing, and its default when it has no entry is NOT expired.
+     *
+     * The fallback only runs when that accessor is missing. It used to be
+     * `new Date(expiresAt ?? 0).getTime() > now`, which reads an absent or unparseable expiresAt
+     * as NaN, and `NaN > now` is false, so a quest Discord considers live was dropped without a
+     * word. The userscript already treated NaN as live; the two engines disagreed on exactly the
+     * quests nobody would think to check.
+     */
+    private isExpired(q: Quest): boolean {
+        const store = this.stores.QuestStore;
+        if (typeof store?.isQuestExpired === "function") {
+            try { return store.isQuestExpired(q.id) === true; } catch { /* fall through */ }
+        }
+        const ends = new Date(q.config?.expiresAt ?? NaN).getTime();
+        return !isNaN(ends) && ends <= Date.now();
+    }
+
     activeQuests(quests: Quest[]): Quest[] {
-        const now = Date.now();
         return quests.filter(q =>
             !q.userStatus?.completedAt
-            && new Date(q.config?.expiresAt ?? 0).getTime() > now
+            && !this.isExpired(q)
             && q.id !== BLACKLISTED_QUEST_ID
             && !this.skipped.has(q.id)
         );
