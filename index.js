@@ -5,7 +5,7 @@
 
     const CONFIG = {
         NAME: "Orion",
-        VERSION: "v4.10.8",
+        VERSION: "v4.10.9",
         THEME: "#5865F2",             // discord blurple
         SUCCESS: "#3BA55C",
         WARN: "#faa61a",
