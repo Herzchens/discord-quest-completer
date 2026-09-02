@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes how Orion is structured internally. It is intended for contributors and the curious, not as a user guide. Last reviewed against `index.js` **v4.10.10**.
+This document describes how Orion is structured internally. It is intended for contributors and the curious, not as a user guide. Last reviewed against `index.js` **v4.10.11**.
 
 ## High-level overview
 
