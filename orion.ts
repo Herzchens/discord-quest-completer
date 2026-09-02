@@ -451,6 +451,66 @@ async function onTaskComplete(
     }
 }
 
+const QUEST_LIST_EVT = "QUESTS_FETCH_CURRENT_QUESTS_SUCCESS";
+const QUEST_LIST_WAIT_MS = 25000;
+
+/**
+ * Wait for Discord to fetch its quest list before the first cycle reads the store.
+ *
+ * Vencord starts plugins well before Discord has any quests. Measured on Stable 1.0.9255 with a
+ * cold launch: Vencord started OrionQuests at +3.5s, the engine ran cycle #1 at +4.0s, and
+ * QuestStore went from empty to 71 quests at +5.4s. With Auto Start on, that first cycle read an
+ * empty store and reported "All available quests are completed", so nothing ever ran until the
+ * user reloaded or typed /orion start by hand. That is issue #74.
+ *
+ * Discord dispatches QUESTS_FETCH_CURRENT_QUESTS_SUCCESS when the list lands, so wait on that
+ * rather than on a fixed delay. An already-populated store skips the wait entirely, which is the
+ * normal case for a manual start. If the event never arrives the run continues anyway: an empty
+ * list is reported honestly by the caller instead of being dressed up as "everything is done".
+ */
+function awaitQuestList(runId: number, runRuntime: OrionRuntime, runStores: Stores): Promise<void> {
+    if (getQuestsArray(runStores.QuestStore).length > 0) return Promise.resolve();
+
+    logger.info("[Startup] Discord has not sent its quest list yet. Waiting for it before the first cycle.");
+    const waitingSince = Date.now();
+
+    return new Promise<void>(resolve => {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let poll: ReturnType<typeof setInterval> | null = null;
+
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            if (poll) clearInterval(poll);
+            try { runStores.Dispatcher?.unsubscribe?.(QUEST_LIST_EVT, onFetched); }
+            catch (e) { debug(logger, `[Startup] Failed to detach the quest list listener: ${(e as any)?.message ?? e}`); }
+            const found = getQuestsArray(runStores.QuestStore).length;
+            if (found > 0) logger.info(`[Startup] Quest list arrived after ${Date.now() - waitingSince}ms, ${found} quest(s).`);
+            resolve();
+        };
+
+        // The dispatch carries the quests, but the store is what the cycle reads, so let the
+        // reducer run first and then let the poll below observe the store it wrote.
+        const onFetched = () => { if (getQuestsArray(runStores.QuestStore).length > 0) finish(); };
+
+        try { runStores.Dispatcher?.subscribe?.(QUEST_LIST_EVT, onFetched); }
+        catch (e) { debug(logger, `[Startup] Could not listen for the quest list fetch: ${(e as any)?.message ?? e}`); }
+
+        // Covers a fetch that landed between the check above and the subscription, a Stop during
+        // the wait, and a client that dispatches under a name this build does not use.
+        poll = setInterval(() => {
+            if (!isRunActive(runId, runRuntime) || getQuestsArray(runStores.QuestStore).length > 0) finish();
+        }, 250);
+
+        timer = setTimeout(() => {
+            logger.warn(`[Startup] Discord had not sent a quest list after ${Math.round(QUEST_LIST_WAIT_MS / 1000)}s. Continuing with what the store holds.`);
+            finish();
+        }, QUEST_LIST_WAIT_MS);
+    });
+}
+
 async function mainLoop(
     runId: number,
     runRuntime: OrionRuntime,
@@ -459,6 +519,8 @@ async function mainLoop(
     runTraffic: Traffic,
     runUserId: string,
 ): Promise<void> {
+    await awaitQuestList(runId, runRuntime, runStores);
+
     let loopCount = 1;
     while (isRunActive(runId, runRuntime)) {
         try {
@@ -508,6 +570,14 @@ async function mainLoop(
             }
 
             if (!active.length) {
+                // An empty store and a store full of finished quests are different situations and
+                // used to produce the same sentence, which is how issue #74 read as "Orion says
+                // everything is done" when Discord had simply not sent the list yet.
+                if (!all.length) {
+                    logger.warn("[System] Discord has not given this client a quest list, so there is nothing to run. Reload Discord and try again.");
+                    lastRunOutcome = "Discord never sent a quest list to this client, so there was nothing to run.";
+                    break;
+                }
                 logger.info("[System] All available quests are completed!");
                 lastRunOutcome = loopCount === 1
                     ? "every quest you can run is already finished, so there was nothing to farm."

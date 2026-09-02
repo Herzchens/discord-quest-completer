@@ -2282,7 +2282,19 @@
             return q instanceof Map ? [...q.values()] : Object.values(q);
         };
 
-        let quests = getQuests().filter(q =>
+        // Discord fetches its quest list a few seconds after the client boots, so a paste into a
+        // console that was opened immediately can land on an empty store. Wait for it rather than
+        // reporting "all completed" for a list that has not arrived yet (issue #74).
+        if (!getQuests().length) {
+            Logger.log('[System] Waiting for Discord to send its quest list...', 'info');
+            for (let waited = 0; waited < 15000 && !getQuests().length && RUNTIME.running; waited += 250) {
+                await new Promise(r => setTimeout(r, 250));
+            }
+        }
+        if (!RUNTIME.running) return;
+
+        const allQuests = getQuests();
+        let quests = allQuests.filter(q =>
             !q.userStatus?.completedAt
             && notExpired(q)
             && q.id !== CONST.ID
@@ -2290,7 +2302,13 @@
         );
 
         if (!quests.length) {
-            Logger.log('[System] All available quests are completed!', 'success');
+            // An empty store and a store full of finished quests read identically to the user
+            // otherwise, and only one of them means "come back later".
+            if (!allQuests.length) {
+                Logger.log('[System] Discord has not given this client a quest list. Reload Discord (Ctrl+R) and paste again.', 'err');
+            } else {
+                Logger.log('[System] All available quests are completed!', 'success');
+            }
             return Logger.shutdown();
         }
 
