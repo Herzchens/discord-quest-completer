@@ -1,6 +1,6 @@
 # Orion
 
-[![Version](https://img.shields.io/badge/v4.10.9-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
+[![Version](https://img.shields.io/badge/v4.10.10-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -139,6 +139,11 @@ Bug reports, PRs and docs all welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has 
 ---
 
 ## Changelog
+
+### v4.10.10
+- **The auto-update installer failed on its second run, on every machine, in v4.10.9.** Reported by [@ZaryImortal](https://github.com/ZaryImortal) in [#73](https://github.com/nyxxbit/discord-quest-completer/issues/73), fixed by [@Herzchens](https://github.com/Herzchens) in [#72](https://github.com/nyxxbit/discord-quest-completer/pull/72). The build-health stamp added in v4.10.9 writes itself atomically, and the overwrite path passed a bare `$null` as the backup path. PowerShell turns that into an empty string when it binds to a `[string]` method parameter, so `File.Replace` rejected it as a malformed path and the installer aborted with `could not persist the Vencord runtime health stamp` after building successfully. It only ever affected runs where a stamp already existed, which is why it was a second-run failure and why a first install looked fine. Verified here by reproducing the exact error on the shipped code and then running the real installer twice against the branch, which now completes both times and leaves no temporary files behind.
+- **The same installer printed a wall of red before it even started.** The preflight passed an empty branch into a parameter constrained to `stable`/`canary`/`ptb`, so the validator complained before the prompt that was about to ask for the branch anyway. The empty case is handled properly now, and an unrecognised branch is still refused, with a message that says what the accepted values are instead of restating the attribute.
+- **The health stamp no longer writes a disposable backup file at all.** Reviewed by [@mods-hd](https://github.com/mods-hd), who identified the root cause independently and pointed out that `[NullString]::Value` passes a genuine null through, which removes both the temporary file and the case where an antivirus holding its handle would leave it behind. Also from his review: the installer test fixture rewrites `start` into a stub so it can never launch a real client, but the pattern was anchored in a way that missed the one indented inside a conditional block, leaving a live `start` in a fixture whose whole contract is that it launches nothing. It never fired, and the assertion that would have caught it now exists.
 
 ### v4.10.9
 - **The bundle installer could replace your Vencord build and report success when nothing would actually load it** ([#71](https://github.com/nyxxbit/discord-quest-completer/pull/71), by [@Herzchens](https://github.com/Herzchens)). Having a Discord folder is not the same as that client being patched to use `%APPDATA%\Vencord`, and the installer never checked. It now verifies the active `app.asar` of the clients it may touch before it changes anything, and stops with an explanation instead of leaving someone with a "Done!" and a plugin that never appears. Checked both ways here: a patched Canary installs cleanly end to end, and every arrangement where the running or fallback client is not patched stops with nothing closed and nothing replaced.
