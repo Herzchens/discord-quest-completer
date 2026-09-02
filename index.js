@@ -1257,12 +1257,17 @@
          */
         detectType(cfg, applicationId) {
             const taskKeys = Object.keys(cfg.tasks);
+            // STREAM sits last of the desktop families on purpose. Discord will not open a
+            // heartbeat for STREAM_ON_DESKTOP unless you are really Going Live with someone else
+            // in the channel, and the engine only fakes the third of those checks, so that task
+            // can only time out. A quest carrying STREAM_ON_DESKTOP beside PLAY_ON_DESKTOP or
+            // WATCH_VIDEO used to be routed to the one path that cannot finish. See issue #75.
             const typeMap = [
                 { match: k => k === "ACHIEVEMENT_IN_ACTIVITY", type: "ACHIEVEMENT" },
                 { match: k => k === "PLAY_ACTIVITY", type: "ACTIVITY" },
-                { match: k => k.startsWith("STREAM"), type: "STREAM", prefer: ["STREAM_ON_DESKTOP"] },
                 { match: k => k.includes("VIDEO"), type: "WATCH_VIDEO", prefer: ["WATCH_VIDEO"] },
                 { match: k => k.startsWith("PLAY"), type: "GAME", prefer: ["PLAY_ON_DESKTOP"] },
+                { match: k => k.startsWith("STREAM"), type: "STREAM", prefer: ["STREAM_ON_DESKTOP"] },
                 { match: k => k.includes("ACTIVITY"), type: "ACTIVITY" }
             ];
 

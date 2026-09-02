@@ -89,10 +89,36 @@ Vanilla Discord **Stable** no longer exposes the live cache post-boot, so Stable
 | Type                      | Mechanism                                                                                 | Automatable        |
 | ------------------------- | ----------------------------------------------------------------------------------------- | ------------------ |
 | `PLAY_ON_DESKTOP`         | Inject a fake running game into `RunningGameStore`; Discord's heartbeat reports progress   | Yes                |
-| `STREAM_ON_DESKTOP`       | Spoof `StreamStore.getStreamerActiveStreamMetadata`                                        | Yes                |
+| `STREAM_ON_DESKTOP`       | Spoof `ApplicationStreamingStore.getStreamerActiveStreamMetadata`                          | No, see below      |
 | `WATCH_VIDEO` / `_ON_MOBILE` | Poll the video-progress endpoint with natural float timestamps at `rnd(3500,4750)`ms   | Yes                |
 | `ACTIVITY`                | Heartbeats against a voice-channel stream key                                              | Yes                |
 | `ACHIEVEMENT_IN_ACTIVITY` | Heartbeat spoof first; on rejection, the OAuth → discordsays progress forgery (below)      | Yes, with consent  |
+
+### `STREAM_ON_DESKTOP` does not complete, and the spoof is why
+
+Discord decides which stream quests are progressing in `QuestProgressManager.getActivelyProgressingStreamOnDesktopQuests()`. Read off Stable 1.0.9255 and Canary 1.0.1148, which carry the same module:
+
+```js
+getActivelyProgressingStreamOnDesktopQuests() {
+    let e = new Map, t = E.A.getCurrentUserActiveStream();
+    if (null == t || 2 > h.Ay.countVoiceStatesForChannel(t.channelId)) return e;
+    let n = E.A.getStreamerActiveStreamMetadata();
+    if (null == n) return e;
+    ...
+}
+```
+
+Three conditions have to hold before the one Orion fakes is even read:
+
+1. `ApplicationStreamingStore.getCurrentUserActiveStream()` returns a stream, so you have to actually be Going Live.
+2. `SortedVoiceStateStore.countVoiceStatesForChannel(stream.channelId)` is at least 2, so somebody else has to be in the channel with you.
+3. `getStreamerActiveStreamMetadata()` returns metadata. This is the only one the engine patches.
+
+`initiateHeartbeat` then calls `getCurrentUserActiveStream()` a second time and calls `terminateHeartbeat` if it is null, so condition 1 is checked twice and the stream key is derived from the object it returns rather than from anything the metadata carries.
+
+Measured on both branches with the engine's own spoof installed and nothing else: `getCurrentUserActiveStream()` stays `null`, so the set comes back empty and Discord never opens a heartbeat for the quest. The task therefore runs its 90 second no-heartbeat watchdog and aborts. Nothing about it is silent, but it also never completes.
+
+Making it work means faking conditions 1 and 2 as well, and then finding out whether the server accepts a heartbeat carrying a stream key for a stream that was never created. That last part is unknown: the `ACTIVITY` path does get synthesized stream keys accepted, but for a voice channel that genuinely exists. Tracked in [#75](https://github.com/nyxxbit/discord-quest-completer/issues/75), and not implemented on a guess.
 
 ### Where the application id comes from
 

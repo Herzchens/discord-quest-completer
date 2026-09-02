@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { CONSOLE_ONLY_KEYS, isConsoleOnly, selectTaskKey } from "../questConfig";
+import { CONSOLE_ONLY_KEYS, isConsoleOnly, selectTaskFamily, selectTaskKey, TASK_FAMILY_ORDER } from "../questConfig";
 
 const PLAY = { match: (k: string) => k.startsWith("PLAY"), prefer: ["PLAY_ON_DESKTOP"] };
 const VIDEO = { match: (k: string) => k.includes("VIDEO"), prefer: ["WATCH_VIDEO"] };
@@ -67,4 +67,34 @@ test("console-only quests are identified so they can be skipped honestly", () =>
 
 test("the console set holds exactly the keys Discord groups as CONSOLE", () => {
     assert.deepEqual([...CONSOLE_ONLY_KEYS].sort(), ["PLAY_ON_PLAYSTATION", "PLAY_ON_XBOX"]);
+});
+
+test("a quest offering both stream and play is driven as a game, not a stream", () => {
+    // STREAM_ON_DESKTOP cannot complete: Discord wants a real Go Live plus a second person in the
+    // channel before it reads the metadata we fake. Routing it ahead of PLAY_ON_DESKTOP sent a
+    // quest that had a working path down the one that only times out.
+    assert.deepEqual(selectTaskFamily(["STREAM_ON_DESKTOP", "PLAY_ON_DESKTOP"]), { type: "GAME", keyName: "PLAY_ON_DESKTOP" });
+    assert.deepEqual(selectTaskFamily(["PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP"]), { type: "GAME", keyName: "PLAY_ON_DESKTOP" });
+    assert.deepEqual(selectTaskFamily(["STREAM_ON_DESKTOP", "WATCH_VIDEO"]), { type: "WATCH_VIDEO", keyName: "WATCH_VIDEO" });
+});
+
+test("a stream-only quest is still detected as a stream rather than skipped", () => {
+    // It will fail, but it has to fail as a STREAM task so the watchdog reports the real reason.
+    assert.deepEqual(selectTaskFamily(["STREAM_ON_DESKTOP"]), { type: "STREAM", keyName: "STREAM_ON_DESKTOP" });
+});
+
+test("the exact-match families stay ahead of the PLAY prefix", () => {
+    assert.deepEqual(selectTaskFamily(["PLAY_ACTIVITY"]), { type: "ACTIVITY", keyName: "PLAY_ACTIVITY" });
+    assert.deepEqual(selectTaskFamily(["ACHIEVEMENT_IN_ACTIVITY", "PLAY_ACTIVITY"]), { type: "ACHIEVEMENT", keyName: "ACHIEVEMENT_IN_ACTIVITY" });
+});
+
+test("a console-only quest matches no family, so detectType can say so", () => {
+    assert.equal(selectTaskFamily(["PLAY_ON_XBOX", "PLAY_ON_PLAYSTATION"]), undefined);
+    assert.equal(selectTaskFamily([]), undefined);
+});
+
+test("stream is the last desktop family in the order", () => {
+    const types = TASK_FAMILY_ORDER.map(rule => rule.type);
+    assert.ok(types.indexOf("STREAM") > types.indexOf("GAME"), "STREAM must not outrank GAME");
+    assert.ok(types.indexOf("STREAM") > types.indexOf("WATCH_VIDEO"), "STREAM must not outrank WATCH_VIDEO");
 });

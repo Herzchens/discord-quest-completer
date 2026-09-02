@@ -12,7 +12,7 @@ import type { PluginNative } from "@utils/types";
 
 import { cleanupCreatedOAuthGrants } from "./oauthLifecycle";
 import type { Patcher } from "./patcher";
-import { isConsoleOnly, selectTaskKey, taskEntries, taskForKey } from "./questConfig";
+import { isConsoleOnly, selectTaskFamily, taskEntries, taskForKey } from "./questConfig";
 import { settings } from "./settings";
 import type { TaskLifecycle } from "./taskControl";
 import type { Traffic } from "./traffic";
@@ -168,27 +168,16 @@ export class TaskRunner {
 
     detectType(cfg: any, applicationId?: string): DetectedTask | null {
         const entries = taskEntries(cfg?.tasks);
-        const typeMap: Array<{ match: (k: string) => boolean; type: TaskType; prefer?: string[]; }> = [
-            { match: k => k === "ACHIEVEMENT_IN_ACTIVITY", type: "ACHIEVEMENT" },
-            { match: k => k === "PLAY_ACTIVITY", type: "ACTIVITY" },
-            { match: k => k.startsWith("STREAM"), type: "STREAM", prefer: ["STREAM_ON_DESKTOP"] },
-            { match: k => k.includes("VIDEO"), type: "WATCH_VIDEO", prefer: ["WATCH_VIDEO"] },
-            { match: k => k.startsWith("PLAY"), type: "GAME", prefer: ["PLAY_ON_DESKTOP"] },
-            { match: k => k.includes("ACTIVITY"), type: "ACTIVITY" },
-        ];
-
         const keys = entries.map(([key]) => key);
-        for (const { match, type, prefer } of typeMap) {
-            const keyName = selectTaskKey(keys, { match, prefer });
-            if (keyName) {
-                const task = entries.find(([key]) => key === keyName)?.[1];
-                return {
-                    type,
-                    keyName,
-                    target: task?.target ?? 0,
-                    appId: this.appIdFor(cfg, keyName, applicationId),
-                };
-            }
+        const family = selectTaskFamily(keys);
+        if (family) {
+            const task = entries.find(([key]) => key === family.keyName)?.[1];
+            return {
+                type: family.type,
+                keyName: family.keyName,
+                target: task?.target ?? 0,
+                appId: this.appIdFor(cfg, family.keyName, applicationId),
+            };
         }
 
         // Every key was a console one, so there is nothing this client can do with the quest.

@@ -57,12 +57,18 @@ Orion reads Discord's own webpack stores and drives Discord's own authenticated 
 | Quest task | How it's completed |
 |---|---|
 | `PLAY_ON_DESKTOP` | Injects a fake running process into `RunningGameStore`, built from the app's real metadata. Discord then sends the quest heartbeats itself and Orion reads the progress off the replies. |
-| `STREAM_ON_DESKTOP` | Same idea, plus a spoofed `getStreamerActiveStreamMetadata` so Discord believes a stream is live. |
+| `STREAM_ON_DESKTOP` | **Does not work.** Same idea, plus a spoofed `getStreamerActiveStreamMetadata`, but Discord checks two other things first and the quest never gets a heartbeat. See below. |
 | `WATCH_VIDEO`, `WATCH_VIDEO_ON_MOBILE` | Posts video progress timestamps on a randomized interval, with the fractional values a real player would send. |
 | `PLAY_ACTIVITY` | Heartbeats against a voice channel stream key. |
 | `ACHIEVEMENT_IN_ACTIVITY` | Tries the heartbeat first. Discord rejects those with a 403, because the activity backend validates them rather than the client, so it falls back to the OAuth path described below. |
 
 Where the quest's application id lives moved in July 2026, from `config.application.id` to per task at `config.taskConfigV2.tasks.<KEY>.applications[0].id`. Reading the old path fails silently rather than loudly, which is what broke every tool in this space at once. See [#43](https://github.com/nyxxbit/discord-quest-completer/issues/43).
+
+### Stream quests
+
+Before Discord reads the metadata Orion fakes, it requires that you are really Going Live and that at least one other person is in the voice channel with you. Faking the third check alone leaves the first two failing, so no heartbeat is ever opened and the task aborts on its 90 second watchdog instead of completing. Measured on Stable 1.0.9255 and Canary 1.0.1148. The reasoning is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#stream_on_desktop-does-not-complete-and-the-spoof-is-why) and the fix is tracked in [#75](https://github.com/nyxxbit/discord-quest-completer/issues/75).
+
+A quest that offers `STREAM_ON_DESKTOP` alongside `PLAY_ON_DESKTOP` or `WATCH_VIDEO` is now driven through the working task instead. It used to be driven as a stream, which meant a quest with a perfectly good path sat there timing out. Only a quest whose sole task is streaming is affected, and Orion still reports the real reason rather than pretending.
 
 ## Achievement quests
 

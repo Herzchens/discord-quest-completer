@@ -6,6 +6,8 @@
  * Pure helpers for Discord's legacy taskConfig and current taskConfigV2 shapes.
  */
 
+import type { TaskType } from "./types";
+
 export function taskEntries(tasks: unknown): Array<[string, any]> {
     if (!tasks) return [];
     if (tasks instanceof Map) return Array.from(tasks.entries()) as Array<[string, any]>;
@@ -65,4 +67,39 @@ export function selectTaskKey(keys: string[], rule: TaskKeyRule): string | undef
 /** True when a quest offers nothing but console tasks, so this client cannot run it at all. */
 export function isConsoleOnly(keys: string[]): boolean {
     return keys.length > 0 && keys.every(key => CONSOLE_ONLY_KEYS.has(key));
+}
+
+export interface TaskFamilyRule extends TaskKeyRule {
+    type: TaskType;
+}
+
+/**
+ * Which family of task to drive when a quest offers more than one, in priority order.
+ *
+ * STREAM comes after GAME and VIDEO because STREAM cannot finish. Discord's
+ * getActivelyProgressingStreamOnDesktopQuests requires a real Go Live and a second person in the
+ * voice channel before it reads the stream metadata the engine fakes, so a STREAM task only ever
+ * reaches its no-heartbeat watchdog. Read off Stable 1.0.9255 and Canary 1.0.1148; the working
+ * through is in docs/ARCHITECTURE.md and issue #75. Ordering it above GAME sent a quest offering
+ * both to the one path that cannot complete.
+ *
+ * The two exact rules stay in front: ACHIEVEMENT_IN_ACTIVITY and PLAY_ACTIVITY would otherwise be
+ * swallowed by the PLAY prefix and run as a game.
+ */
+export const TASK_FAMILY_ORDER: TaskFamilyRule[] = [
+    { match: key => key === "ACHIEVEMENT_IN_ACTIVITY", type: "ACHIEVEMENT" },
+    { match: key => key === "PLAY_ACTIVITY", type: "ACTIVITY" },
+    { match: key => key.includes("VIDEO"), type: "WATCH_VIDEO", prefer: ["WATCH_VIDEO"] },
+    { match: key => key.startsWith("PLAY"), type: "GAME", prefer: ["PLAY_ON_DESKTOP"] },
+    { match: key => key.startsWith("STREAM"), type: "STREAM", prefer: ["STREAM_ON_DESKTOP"] },
+    { match: key => key.includes("ACTIVITY"), type: "ACTIVITY" },
+];
+
+/** The family and key this client should drive for a quest, or undefined if it can drive none. */
+export function selectTaskFamily(keys: string[]): { type: TaskType; keyName: string; } | undefined {
+    for (const rule of TASK_FAMILY_ORDER) {
+        const keyName = selectTaskKey(keys, rule);
+        if (keyName) return { type: rule.type, keyName };
+    }
+    return undefined;
 }
