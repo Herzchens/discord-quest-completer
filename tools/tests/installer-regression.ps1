@@ -180,7 +180,9 @@ try {
     $bundleScript = $bundleScript.Replace("`r`n", "`n")
     $bundleScript = [regex]::Replace($bundleScript, '(?m)^tasklist /FI "IMAGENAME eq ([^"]+)"[^\r\n]*$', 'call :orion_test_is_running $1')
     $bundleScript = [regex]::Replace($bundleScript, '(?m)^taskkill /F /IM ([^ >]+)[^\r\n]*$', 'call :orion_test_kill $1')
-    $bundleScript = [regex]::Replace($bundleScript, '(?m)^start "" "[^"]+\\Update\.exe" --processStart ([^\r\n]+)$', 'call :orion_test_start $1')
+    # Leading whitespace matters: the start inside :startFallback sits in a parenthesised if
+    # block and is indented, so an anchor of ^start left it in the fixture unrewritten.
+    $bundleScript = [regex]::Replace($bundleScript, '(?m)^[ \t]*start "" "[^"]+\\Update\.exe" --processStart ([^\r\n]+)$', 'call :orion_test_start $1')
     $bundleScript += @'
 
 :: test-only process harness injected into the fixture copy
@@ -202,6 +204,11 @@ exit /b 0
 exit /b 0
 '@
     Assert-False ($bundleScript -match '(?m)^(tasklist|taskkill)\b') 'Bundle smoke fixture must not use the host process table or kill host Discord processes.'
+    # The process lookups were guarded and start was not, which is how the indented one went
+    # unnoticed. It never fired because this fixture installs two flavors and :startFallback
+    # only runs with exactly one, but a one-install fixture would have launched a real client
+    # from a test whose whole contract is that it launches nothing.
+    Assert-False ($bundleScript -match '(?m)^[ \t]*start "" "[^"]+\\Update\.exe"') 'Bundle smoke fixture must not launch a real Discord client.'
     Set-Content -LiteralPath $bundleScriptPath -Value $bundleScript -Encoding ASCII
 
     Set-Content -LiteralPath (Join-Path $bundleCopy 'dist\patcher.js') -Value "// Vencord deadbeef`n// Standalone: true`n// Updater Disabled: true`norion-patcher" -Encoding ASCII

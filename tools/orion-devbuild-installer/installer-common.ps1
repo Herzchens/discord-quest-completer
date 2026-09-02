@@ -119,7 +119,6 @@ function Write-OrionVencordHealthStamp {
 
     $stamp = Get-OrionVencordHealthStampPath -InstallDir $InstallDir
     $temporary = "$stamp.new"
-    $replacementBackup = "$stamp.replace-" + [guid]::NewGuid().ToString('N')
     $lines = [string[]]@(Get-VencordDistHashLines -DistPath $DistPath)
     if ($lines.Count -ne $script:VencordDesktopRuntimeFiles.Count) { throw 'could not hash the complete Vencord runtime' }
 
@@ -127,15 +126,17 @@ function Write-OrionVencordHealthStamp {
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [IO.File]::WriteAllLines($temporary, $lines, $utf8NoBom)
         if (Test-Path -LiteralPath $stamp -PathType Leaf) {
-            # Windows PowerShell 5.1 / .NET Framework can reject a null backup path
-            # for File.Replace. Use a same-directory disposable backup instead.
-            [IO.File]::Replace($temporary, $stamp, $replacementBackup)
+            # PowerShell converts a bare $null into '' when it binds to a [string] method
+            # parameter, and File.Replace rejects an empty backup path as malformed. That is
+            # what broke every second run of the devbuild installer in v4.10.9 (issue #73).
+            # [NullString]::Value passes a genuine null through, so no backup file is created
+            # and there is nothing left to clean up if a scanner holds the handle.
+            [IO.File]::Replace($temporary, $stamp, [NullString]::Value)
         } else {
             [IO.File]::Move($temporary, $stamp)
         }
     } finally {
         if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
-        if (Test-Path -LiteralPath $replacementBackup -PathType Leaf) { Remove-Item -LiteralPath $replacementBackup -Force -ErrorAction SilentlyContinue }
     }
 }
 
