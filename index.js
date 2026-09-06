@@ -201,6 +201,63 @@
     // Console task keys. Discord groups them as CONSOLE and no desktop client can drive them.
     const CONSOLE_ONLY_KEYS = new Set(['PLAY_ON_XBOX', 'PLAY_ON_PLAYSTATION']);
 
+    // The task table comes out of Discord's own store, which hands some payloads back as a Map.
+    // Indexing one of those with [] reads undefined and looks like a quest with no tasks, so
+    // every read of it goes through these two.
+    const taskKeys = (tasks) => (tasks instanceof Map ? [...tasks.keys()] : Object.keys(tasks ?? {}));
+    const taskAt = (tasks, key) => (tasks instanceof Map ? tasks.get(key) : tasks?.[key]);
+
+    // Task keys Discord validates somewhere this script cannot reach, mapped to why.
+    // ACHIEVEMENT_IN_GAME is not ACHIEVEMENT_IN_ACTIVITY: no embedded activity, no discordsays
+    // backend to report progress to, so the bypass has nothing to authorize against. The quest
+    // wants an achievement inside the retail game with the game linked to the account.
+    const UNAUTOMATABLE_KEYS = new Map([
+        ['ACHIEVEMENT_IN_GAME', 'That needs the game linked to your account and an achievement earned inside the game itself, which nothing running in Discord can do for you.']
+    ]);
+
+    /*
+     * Why this client cannot drive a quest, as the sentence to log, or null when it can drive it.
+     *
+     * The loop used to answer this with five separate guards, four of which logged and returned
+     * without adding the quest to `Tasks.skipped`. The active filter reads that set, so those four
+     * handed the same quest back on the next cycle and the run looped on it until the user
+     * stopped it (issue #78). Answering in one place keeps the decision and the marking together,
+     * so a new reason cannot be added without the caller skipping the quest.
+     *
+     * Every reason is permanent for the life of a run: the task config, the desktop-ness of the
+     * client and the target do not change while Orion runs, and a fresh start re-reads all three.
+     */
+    const questBlocker = ({ name, hasTaskConfig, keys, typeData, isDesktop }) => {
+        if (!hasTaskConfig) return `"${name}" has no usable task config, so there is nothing to drive.`;
+
+        if (!typeData) {
+            if (!keys.length) return `"${name}" lists no tasks at all, so there is nothing to drive.`;
+            if (keys.every(k => CONSOLE_ONLY_KEYS.has(k))) return `"${name}" is console-only (${keys.join(', ')}), so no desktop client can run it.`;
+
+            // The reason belongs to one key, so a quest carrying several says which one it
+            // explains rather than attaching the sentence to the whole list.
+            const named = keys.find(k => UNAUTOMATABLE_KEYS.has(k));
+            if (named) {
+                return keys.length === 1
+                    ? `"${name}" offers only ${named}. ${UNAUTOMATABLE_KEYS.get(named)}`
+                    : `"${name}" offers ${keys.join(', ')}, and none of them run here. The one we know about is ${named}. ${UNAUTOMATABLE_KEYS.get(named)}`;
+            }
+
+            return `"${name}" uses an unsupported task type (${keys.join(', ')}).`;
+        }
+
+        const { type, target, appId } = typeData;
+
+        if (!isDesktop && (type === 'GAME' || type === 'STREAM')) return `"${name}" needs the desktop app for its ${type} task.`;
+        if (target <= 0) return `"${name}" has an invalid target (${target}).`;
+        // GAME/STREAM impersonate a specific application. Without a real id the fake process is
+        // unidentifiable and Discord silently never counts it, so skip rather than run a task
+        // that cannot finish (issue #43).
+        if ((type === 'GAME' || type === 'STREAM') && !appId) return `"${name}" has no application id in its config, so the game cannot be spoofed.`;
+
+        return null;
+    };
+
     const futureDate = (raw) => {
         try {
             if (!raw) return null;
@@ -1254,7 +1311,7 @@
         // A GAME quest built with the wrong id produces a fake process Discord can't
         // match to the quest, so it never schedules a heartbeat (issue #43).
         appIdFor(cfg, keyName, legacyAppId) {
-            return cfg?.tasks?.[keyName]?.applications?.[0]?.id ?? legacyAppId ?? null;
+            return taskAt(cfg?.tasks, keyName)?.applications?.[0]?.id ?? legacyAppId ?? null;
         },
 
         // Match task keys from the quest config to our handler types.
@@ -1278,7 +1335,7 @@
          * quests outright instead of pretending to run them.
          */
         detectType(cfg, applicationId) {
-            const taskKeys = Object.keys(cfg.tasks);
+            const keys = taskKeys(cfg.tasks);
             // STREAM sits last of the desktop families on purpose. Discord will not open a
             // heartbeat for STREAM_ON_DESKTOP unless you are really Going Live with someone else
             // in the channel, and the engine only fakes the third of those checks, so that task
@@ -1294,24 +1351,24 @@
             ];
 
             for (const { match, type, prefer } of typeMap) {
-                const keyName = (prefer && taskKeys.find(k => prefer.includes(k)))
-                    || taskKeys.find(k => match(k) && !CONSOLE_ONLY_KEYS.has(k));
+                const keyName = (prefer && keys.find(k => prefer.includes(k)))
+                    || keys.find(k => match(k) && !CONSOLE_ONLY_KEYS.has(k));
                 if (keyName) {
                     return {
                         type, keyName,
-                        target: cfg.tasks[keyName]?.target ?? 0,
+                        target: taskAt(cfg.tasks, keyName)?.target ?? 0,
                         appId: this.appIdFor(cfg, keyName, applicationId)
                     };
                 }
             }
 
             // Every key was a console one, so there is nothing this client can do with the quest.
-            if (taskKeys.length > 0 && taskKeys.every(k => CONSOLE_ONLY_KEYS.has(k))) return null;
+            if (keys.length > 0 && keys.every(k => CONSOLE_ONLY_KEYS.has(k))) return null;
 
             if (applicationId) {
                 return {
                     type: "GAME", keyName: "PLAY_ON_DESKTOP",
-                    target: cfg.tasks[taskKeys[0]]?.target ?? 0,
+                    target: taskAt(cfg.tasks, keys[0])?.target ?? 0,
                     appId: applicationId
                 };
             }
@@ -2392,6 +2449,12 @@
         }
 
         let loopCount = 1;
+        // Quests this client cannot drive, counted across the whole run so the closing
+        // line does not report them as completed.
+        let unrunnable = 0;
+        // Quest ids Discord had already finished when this run started. A run that farms one quest
+        // and skips another cannot otherwise tell its own work from work finished last week.
+        let completedAtStart = null;
 
         while (RUNTIME.running) {
             try {
@@ -2415,6 +2478,7 @@
                 }
 
                 quests = getQuests();
+                if (!completedAtStart) completedAtStart = new Set(quests.filter(q => q.userStatus?.completedAt).map(q => q.id));
 
                 // Filter out completed, expired, blacklisted, skipped, AND unselected quests
                 const active = quests.filter(q =>
@@ -2425,43 +2489,48 @@
                     && !Tasks.skipped.has(q.id)
                 );
 
-                if (!active.length) { Logger.log('[System] All available quests are completed!', 'success'); Sound.play('done'); break; }
+                if (!active.length) {
+                    // Saying "all completed" here is how a skipped quest reads as a finished one.
+                    // A run that skipped something can still have farmed something, so count what
+                    // it finished and keep the done sound for that case.
+                    if (unrunnable > 0) {
+                        const finished = quests.filter(q => q.userStatus?.completedAt && !completedAtStart.has(q.id)).length;
+                        Logger.log(finished > 0
+                            ? `[System] Nothing left to run. ${finished} quest(s) finished, ${unrunnable} skipped because this client cannot drive them.`
+                            : `[System] Nothing left to run. ${unrunnable} quest(s) were skipped because this client cannot drive them.`, 'warn');
+                        if (finished > 0) Sound.play('done');
+                        break;
+                    }
+                    Logger.log('[System] All available quests are completed!', 'success');
+                    Sound.play('done');
+                    break;
+                }
 
                 const queues = { video: [], game: [] };
 
                 active.forEach(q => {
                     try {
                         const cfg = q.config?.taskConfig ?? q.config?.taskConfigV2;
-                        if (!cfg?.tasks || typeof cfg.tasks !== 'object') {
-                            Logger.log(`[Quest] ${q.id} has invalid task config. Skipping.`, 'warn');
-                            return;
-                        }
-
-                        const typeData = Tasks.detectType(cfg, q.config?.application?.id);
-                        if (!typeData) {
-                            Logger.log(`[Quest] Unknown task type: ${q.config?.messages?.questName ?? q.id}`, 'warn');
-                            return;
-                        }
-
-                        if (!SYS.IS_DESKTOP && (typeData.type === 'GAME' || typeData.type === 'STREAM')) {
-                            Logger.log(`[Quest] "${q.config?.messages?.questName}" requires desktop app. Skipping.`, 'warn');
+                        const questName = q.config?.messages?.questName ?? q.id;
+                        const hasTaskConfig = !!cfg?.tasks && typeof cfg.tasks === 'object';
+                        const typeData = hasTaskConfig ? Tasks.detectType(cfg, q.config?.application?.id) : null;
+                        const blocker = questBlocker({
+                            name: questName,
+                            hasTaskConfig,
+                            keys: hasTaskConfig ? taskKeys(cfg.tasks) : [],
+                            typeData,
+                            isDesktop: SYS.IS_DESKTOP
+                        });
+                        if (blocker) {
+                            Logger.log(`[Quest] ${blocker} Skipping it for the rest of this run.`, 'warn');
+                            // Marking the quest skipped is the point: the active filter reads this
+                            // set, and without it the same quest comes back every cycle (issue #78).
+                            Tasks.skipped.add(q.id);
+                            unrunnable++;
                             return;
                         }
 
                         const { type, keyName, target, appId } = typeData;
-                        if (target <= 0) {
-                            Logger.log(`[Quest] Invalid target (${target}) for ${q.id}. Skipping.`, 'warn');
-                            return;
-                        }
-
-                        // GAME/STREAM impersonate a specific application. Without a real id the
-                        // fake process is unidentifiable and Discord silently never counts it, so
-                        // skip loudly instead of running a task that can't finish (issue #43).
-                        if ((type === 'GAME' || type === 'STREAM') && !appId) {
-                            Logger.log(`[Quest] "${q.config?.messages?.questName ?? q.id}" has no application id in its config, so the game cannot be spoofed. Skipping.`, 'warn');
-                            Tasks.skipped.add(q.id);
-                            return;
-                        }
 
                         const tInfo = {
                             id: q.id,

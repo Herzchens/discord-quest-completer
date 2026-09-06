@@ -7,7 +7,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { selectQuestTaskConfig, taskEntries, taskForKey } from "../questConfig";
+import { questBlocker, selectQuestTaskConfig, taskEntries, taskForKey, UNAUTOMATABLE_KEYS } from "../questConfig";
+import type { DetectedTask } from "../types";
 
 test("taskConfigV2 wins when Discord keeps both current and legacy configs", () => {
     const legacy = { tasks: { PLAY_ON_DESKTOP: { target: 10 } } };
@@ -30,4 +31,87 @@ test("task helpers preserve Map-shaped Discord store data", () => {
 
     assert.deepEqual(taskEntries(tasks), [["PLAY_ACTIVITY", tasks.get("PLAY_ACTIVITY")]]);
     assert.equal(taskForKey(config, "PLAY_ACTIVITY"), tasks.get("PLAY_ACTIVITY"));
+});
+
+const RUNNABLE: DetectedTask = { type: "GAME", keyName: "PLAY_ON_DESKTOP", target: 60, appId: "1" };
+
+function blocker(over: Partial<Parameters<typeof questBlocker>[0]> = {}) {
+    return questBlocker({
+        name: "Battlefield 6 Multiplayer",
+        hasTaskConfig: true,
+        keys: ["PLAY_ON_DESKTOP"],
+        detected: RUNNABLE,
+        isDesktop: true,
+        ...over,
+    });
+}
+
+test("a runnable quest is not blocked", () => {
+    assert.equal(blocker(), null);
+});
+
+test("an undetectable task type is reported as unsupported and names the keys", () => {
+    // Issue #78: the log said "Unknown task type" and the engine then handed the quest back on
+    // every cycle. The wording has to say what the quest offered, or the report cannot be acted on.
+    const message = blocker({ keys: ["COMPLETE_BATTLEFIELD_6_MULTIPLAYER"], detected: null });
+
+    assert.ok(message, "an undetectable quest must be blocked, not retried");
+    assert.match(message, /unsupported task type/);
+    assert.match(message, /COMPLETE_BATTLEFIELD_6_MULTIPLAYER/);
+    assert.doesNotMatch(message, /[Uu]nknown/);
+});
+
+test("a console-only quest says so instead of calling the type unsupported", () => {
+    const message = blocker({ keys: ["PLAY_ON_XBOX", "PLAY_ON_PLAYSTATION"], detected: null });
+
+    assert.match(String(message), /console-only/);
+});
+
+test("a quest with no tasks at all is blocked", () => {
+    assert.match(String(blocker({ keys: [], detected: null })), /no tasks at all/);
+    assert.match(String(blocker({ hasTaskConfig: false, keys: [], detected: null })), /no usable task config/);
+});
+
+test("the web client is blocked from game and stream quests, but not from video ones", () => {
+    assert.match(String(blocker({ isDesktop: false })), /needs the desktop app/);
+    assert.match(String(blocker({ isDesktop: false, detected: { ...RUNNABLE, type: "STREAM" } })), /needs the desktop app/);
+    assert.equal(blocker({ isDesktop: false, detected: { ...RUNNABLE, type: "WATCH_VIDEO" } }), null);
+});
+
+test("a quest that cannot be driven is blocked on target and on a missing application id", () => {
+    assert.match(String(blocker({ detected: { ...RUNNABLE, target: 0 } })), /invalid target \(0\)/);
+    assert.match(String(blocker({ detected: { ...RUNNABLE, appId: null } })), /no application id/);
+    // A video quest needs no application id, so it must survive that check.
+    assert.equal(blocker({ detected: { ...RUNNABLE, type: "WATCH_VIDEO", appId: null } }), null);
+});
+
+test("a key Discord validates outside the client is named, not called unsupported", () => {
+    // ACHIEVEMENT_IN_GAME, read off a live account on the Battlefield 6 Multiplayer quest of
+    // issue #78. It matches no family rule, so detectType returns null and the quest used to be
+    // logged as an unknown task type once a cycle forever.
+    const message = String(blocker({ keys: ["ACHIEVEMENT_IN_GAME"], detected: null }));
+
+    assert.match(message, /offers only ACHIEVEMENT_IN_GAME/);
+    assert.match(message, /linked to your account/);
+    assert.doesNotMatch(message, /unsupported task type/);
+});
+
+test("a known key beside an unknown one says which of them the reason is about", () => {
+    const message = String(blocker({ keys: ["ACHIEVEMENT_IN_GAME", "SOMETHING_NEW"], detected: null }));
+
+    assert.match(message, /SOMETHING_NEW/);
+    assert.match(message, /The one we know about is ACHIEVEMENT_IN_GAME/);
+    // "offers only" beside two keys would be wrong, and the reason covers one of them.
+    assert.doesNotMatch(message, /offers only/);
+});
+
+test("a key nobody has documented still falls back to the unsupported wording", () => {
+    assert.match(String(blocker({ keys: ["SOMETHING_NEW"], detected: null })), /unsupported task type \(SOMETHING_NEW\)/);
+});
+
+test("the unautomatable set explains every key it holds", () => {
+    for (const [key, why] of UNAUTOMATABLE_KEYS) {
+        assert.ok(key.length > 0);
+        assert.ok(why.length > 20, `${key} needs a reason a user can read`);
+    }
 });

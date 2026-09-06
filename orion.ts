@@ -16,7 +16,7 @@ import { FluxDispatcher, RestAPI } from "@webpack/common";
 import { isConfirmedDifferentAccount } from "./accountIdentity";
 import { setAchievementBypassHook } from "./hooks";
 import { Patcher } from "./patcher";
-import { selectQuestTaskConfig } from "./questConfig";
+import { questBlocker, selectQuestTaskConfig, taskEntries } from "./questConfig";
 import { settings } from "./settings";
 import { TaskControlRegistry, type TaskLifecycle } from "./taskControl";
 import { TaskRunner } from "./tasks";
@@ -522,6 +522,12 @@ async function mainLoop(
     await awaitQuestList(runId, runRuntime, runStores);
 
     let loopCount = 1;
+    // Quests this client cannot drive, counted across the whole run so the wrap-up line
+    // does not report them as completed.
+    let unrunnable = 0;
+    // Quest ids Discord had already finished when this run started. A run that farms one quest
+    // and skips another cannot otherwise tell its own work from work finished last week.
+    let completedAtStart: Set<string> | null = null;
     while (isRunActive(runId, runRuntime)) {
         try {
             const currentUserId = getCurrentUserId();
@@ -556,6 +562,7 @@ async function mainLoop(
             }
 
             const all = getQuestsArray(runStores.QuestStore);
+            if (!completedAtStart) completedAtStart = new Set(all.filter(q => q.userStatus?.completedAt).map(q => q.id));
             const active = runTasks.activeQuests(all);
             const activeIds = new Set(active.map(q => q.id));
 
@@ -578,6 +585,21 @@ async function mainLoop(
                     lastRunOutcome = "Discord never sent a quest list to this client, so there was nothing to run.";
                     break;
                 }
+                if (unrunnable > 0) {
+                    // Saying "all completed" here is how a skipped quest reads as a finished one.
+                    // A run that skipped something can still have farmed something, so count what
+                    // it finished and keep the done sound for that case.
+                    const finished = all.filter(q => q.userStatus?.completedAt && !completedAtStart?.has(q.id)).length;
+                    logger.info(finished > 0
+                        ? `[System] Nothing left to run. ${finished} quest(s) finished, ${unrunnable} skipped because this client cannot drive them.`
+                        : `[System] Nothing left to run. ${unrunnable} quest(s) were skipped because this client cannot drive them.`);
+                    lastRunOutcome = finished > 0
+                        ? `${finished} quest(s) finished, and ${unrunnable} were skipped because this client cannot drive them.`
+                        : `nothing was left to run, and ${unrunnable} quest(s) were skipped because this client cannot drive them.`;
+                    if (finished > 0) Sound.play("done");
+                    break;
+                }
+
                 logger.info("[System] All available quests are completed!");
                 lastRunOutcome = loopCount === 1
                     ? "every quest you can run is already finished, so there was nothing to farm."
@@ -596,32 +618,29 @@ async function mainLoop(
                     if (taskControls.get(q.id)) continue;
 
                     const cfg = selectQuestTaskConfig(q.config);
-                    if (!cfg?.tasks || typeof cfg.tasks !== "object") {
-                        logger.warn(`[Quest] ${q.id} has invalid task config. Skipping.`);
-                        continue;
-                    }
-
-                    const detected = runTasks.detectType(cfg, q.config?.application?.id);
-                    if (!detected) {
-                        logger.warn(`[Quest] Unknown task type: ${q.config?.messages?.questName ?? q.id}`);
-                        continue;
-                    }
-                    if (!IS_DESKTOP && (detected.type === "GAME" || detected.type === "STREAM")) {
-                        logger.warn(`[Quest] "${q.config?.messages?.questName ?? q.id}" requires desktop app. Skipping.`);
-                        continue;
-                    }
-
-                    const { type, keyName, target, appId } = detected;
-                    if (target <= 0) {
-                        logger.warn(`[Quest] Invalid target (${target}) for ${q.id}. Skipping.`);
-                        continue;
-                    }
-                    if ((type === "GAME" || type === "STREAM") && !appId) {
-                        logger.warn(`[Quest] "${q.config?.messages?.questName ?? q.id}" has no application id in its config, so the game cannot be spoofed. Skipping.`);
+                    const questName = q.config?.messages?.questName ?? q.id;
+                    const hasTaskConfig = !!cfg?.tasks && typeof cfg.tasks === "object";
+                    const detected = hasTaskConfig ? runTasks.detectType(cfg, q.config?.application?.id) : null;
+                    const blocker = questBlocker({
+                        name: questName,
+                        hasTaskConfig,
+                        keys: taskEntries(cfg?.tasks).map(([key]) => key),
+                        detected,
+                        isDesktop: IS_DESKTOP,
+                    });
+                    if (blocker) {
+                        logger.warn(`[Quest] ${blocker} Skipping it for the rest of this run.`);
+                        // Marking the quest skipped is the whole point: activeQuests filters on
+                        // this set, and without it the same quest comes back every cycle and the
+                        // run loops on it until the user pauses (issue #78).
                         runRuntime.skipped.add(q.id);
                         runTasks.skipped.add(q.id);
+                        unrunnable++;
                         continue;
                     }
+
+                    // questBlocker returns a sentence for every null detection, so by here it is set.
+                    const { type, keyName, target, appId } = detected!;
 
                     // RUNNING without a control is never expected after the worker recovery below,
                     // so keep that guard strict. QUEUE is different: Resume intentionally leaves a

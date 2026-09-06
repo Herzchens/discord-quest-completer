@@ -6,7 +6,7 @@
  * Pure helpers for Discord's legacy taskConfig and current taskConfigV2 shapes.
  */
 
-import type { TaskType } from "./types";
+import type { DetectedTask, TaskType } from "./types";
 
 export function taskEntries(tasks: unknown): Array<[string, any]> {
     if (!tasks) return [];
@@ -69,6 +69,22 @@ export function isConsoleOnly(keys: string[]): boolean {
     return keys.length > 0 && keys.every(key => CONSOLE_ONLY_KEYS.has(key));
 }
 
+/**
+ * Task keys Discord validates somewhere this tool cannot reach, mapped to why.
+ *
+ * ACHIEVEMENT_IN_GAME arrived on the Battlefield 6 Multiplayer quest and is not
+ * ACHIEVEMENT_IN_ACTIVITY: there is no embedded activity behind it and no discordsays backend to
+ * report progress to, so the bypass in tasks.ts has nothing to authorize against. The quest asks
+ * for an achievement inside the retail game, with the game linked to the account, which is a real
+ * play session by design.
+ *
+ * Naming the key here rather than letting it fall through to "unsupported task type" is the
+ * difference between a user reporting a bug and a user reading why the quest was left alone.
+ */
+export const UNAUTOMATABLE_KEYS = new Map<string, string>([
+    ["ACHIEVEMENT_IN_GAME", "That needs the game linked to your account and an achievement earned inside the game itself, which nothing running in Discord can do for you."],
+]);
+
 export interface TaskFamilyRule extends TaskKeyRule {
     type: TaskType;
 }
@@ -102,4 +118,63 @@ export function selectTaskFamily(keys: string[]): { type: TaskType; keyName: str
         if (keyName) return { type: rule.type, keyName };
     }
     return undefined;
+}
+
+export interface QuestRunnability {
+    /** Quest name as Discord worded it, used only for the log line. */
+    name: string;
+    /** True when selectQuestTaskConfig returned a config with a tasks object. */
+    hasTaskConfig: boolean;
+    /** Task keys the quest offers, in whatever order the server listed them. */
+    keys: string[];
+    /** What detectType made of the quest, or null when it made nothing of it. */
+    detected: DetectedTask | null;
+    /** IS_DESKTOP. The web client cannot spoof a game process or a stream. */
+    isDesktop: boolean;
+}
+
+/**
+ * Why this client cannot drive a quest, as the sentence to log, or null when it can drive it.
+ *
+ * The engine used to answer this inline with five separate guards, four of which logged and
+ * continued without marking the quest skipped. activeQuests only filters on the skipped set, so
+ * those four handed the same quest back on the next cycle and the run looped on it until the
+ * user paused. Issue #78 is that loop: a Battlefield 6 quest that needs the game linked and
+ * actually played, rescanned once a cycle forever. Answering here keeps the decision and the
+ * marking in one place, so a new reason cannot be added without the caller skipping the quest.
+ *
+ * Every reason is permanent for the life of a run, which is what makes skipping safe: the task
+ * config, the desktop-ness of the client and the target do not change while the engine runs, and
+ * a fresh start re-evaluates all of them.
+ */
+export function questBlocker(q: QuestRunnability): string | null {
+    if (!q.hasTaskConfig) return `"${q.name}" has no usable task config, so there is nothing to drive.`;
+
+    if (!q.detected) {
+        if (!q.keys.length) return `"${q.name}" lists no tasks at all, so there is nothing to drive.`;
+        if (isConsoleOnly(q.keys)) return `"${q.name}" is console-only (${q.keys.join(", ")}), so no desktop client can run it.`;
+
+        // The reason belongs to one key, so a quest carrying several says which one it explains
+        // rather than attaching the sentence to the whole list.
+        const named = q.keys.find(key => UNAUTOMATABLE_KEYS.has(key));
+        if (named) {
+            return q.keys.length === 1
+                ? `"${q.name}" offers only ${named}. ${UNAUTOMATABLE_KEYS.get(named)}`
+                : `"${q.name}" offers ${q.keys.join(", ")}, and none of them run here. The one we know about is ${named}. ${UNAUTOMATABLE_KEYS.get(named)}`;
+        }
+
+        return `"${q.name}" uses an unsupported task type (${q.keys.join(", ")}).`;
+    }
+
+    const { type, target, appId } = q.detected;
+
+    if (!q.isDesktop && (type === "GAME" || type === "STREAM")) {
+        return `"${q.name}" needs the desktop app for its ${type} task.`;
+    }
+    if (target <= 0) return `"${q.name}" has an invalid target (${target}).`;
+    if ((type === "GAME" || type === "STREAM") && !appId) {
+        return `"${q.name}" has no application id in its config, so the game cannot be spoofed.`;
+    }
+
+    return null;
 }
