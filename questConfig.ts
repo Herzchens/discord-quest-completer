@@ -6,7 +6,7 @@
  * Pure helpers for Discord's legacy taskConfig and current taskConfigV2 shapes.
  */
 
-import type { DetectedTask, TaskType } from "./types";
+import type { DetectedTask, QuestOutcome, RunSummary, TaskType } from "./types";
 
 export function taskEntries(tasks: unknown): Array<[string, any]> {
     if (!tasks) return [];
@@ -177,4 +177,42 @@ export function questBlocker(q: QuestRunnability): string | null {
     }
 
     return null;
+}
+
+/**
+ * Record what happened to a quest, at the point the run decides it.
+ *
+ * Completed wins over an earlier blocked or failed: a quest this client could not drive and the
+ * user then finished by hand is finished, and must not be counted in both columns.
+ */
+export function recordOutcome(outcomes: Map<string, QuestOutcome>, id: string, outcome: QuestOutcome): void {
+    if (outcomes.get(id) === "completed") return;
+    outcomes.set(id, outcome);
+}
+
+/**
+ * The wrap-up for a run with nothing left to do.
+ *
+ * failTask puts a quest in the skipped set as surely as questBlocker does, so a run whose only
+ * quest died in a handler emptied the active list with nothing marked unrunnable and announced
+ * that every quest was completed, with the done sound. Counting outcomes instead of quests that
+ * gained completedAt fixes both that and the quest counted as finished and skipped at once.
+ */
+export function summarizeRun(outcomes: Map<string, QuestOutcome>): RunSummary {
+    let finished = 0, blocked = 0, failed = 0;
+    for (const outcome of outcomes.values()) {
+        if (outcome === "completed") finished++;
+        else if (outcome === "blocked") blocked++;
+        else failed++;
+    }
+
+    if (!blocked && !failed) {
+        return { finished, blocked, failed, line: "All available quests are completed!", playDone: true };
+    }
+
+    const parts: string[] = [];
+    if (finished) parts.push(`${finished} quest(s) finished`);
+    if (blocked) parts.push(`${blocked} skipped because this client cannot drive them`);
+    if (failed) parts.push(`${failed} failed`);
+    return { finished, blocked, failed, line: `Nothing left to run. ${parts.join(", ")}.`, playDone: finished > 0 };
 }

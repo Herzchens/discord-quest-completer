@@ -7,8 +7,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { questBlocker, selectQuestTaskConfig, taskEntries, taskForKey, UNAUTOMATABLE_KEYS } from "../questConfig";
-import type { DetectedTask } from "../types";
+import { questBlocker, recordOutcome, selectQuestTaskConfig, summarizeRun, taskEntries, taskForKey, UNAUTOMATABLE_KEYS } from "../questConfig";
+import type { DetectedTask, QuestOutcome } from "../types";
 
 test("taskConfigV2 wins when Discord keeps both current and legacy configs", () => {
     const legacy = { tasks: { PLAY_ON_DESKTOP: { target: 10 } } };
@@ -114,4 +114,50 @@ test("the unautomatable set explains every key it holds", () => {
         assert.ok(key.length > 0);
         assert.ok(why.length > 20, `${key} needs a reason a user can read`);
     }
+});
+
+const outcomesOf = (...entries: Array<[string, QuestOutcome]>) => {
+    const outcomes = new Map<string, QuestOutcome>();
+    for (const [id, outcome] of entries) recordOutcome(outcomes, id, outcome);
+    return outcomes;
+};
+
+test("a run whose only quest failed does not report that everything is completed", () => {
+    // failTask puts the quest in the skipped set, so the next cycle finds nothing active.
+    // Reading that as success is what played the done sound over a run that farmed nothing.
+    const summary = summarizeRun(outcomesOf(["q1", "failed"]));
+
+    assert.equal(summary.finished, 0);
+    assert.equal(summary.failed, 1);
+    assert.equal(summary.playDone, false);
+    assert.doesNotMatch(summary.line, /All available quests are completed/);
+    assert.match(summary.line, /1 failed/);
+});
+
+test("a quest blocked by Orion and then finished by hand is counted once", () => {
+    const outcomes = outcomesOf(["q1", "blocked"], ["q1", "completed"]);
+    const summary = summarizeRun(outcomes);
+
+    assert.equal(summary.finished, 1);
+    assert.equal(summary.blocked, 0);
+    assert.equal(outcomes.size, 1);
+});
+
+test("a later failure never overwrites a quest this run completed", () => {
+    assert.equal(summarizeRun(outcomesOf(["q1", "completed"], ["q1", "failed"])).finished, 1);
+});
+
+test("a run that farmed one quest and skipped another reports both and keeps the sound", () => {
+    const summary = summarizeRun(outcomesOf(["q1", "completed"], ["q2", "blocked"]));
+
+    assert.equal(summary.playDone, true);
+    assert.match(summary.line, /1 quest\(s\) finished/);
+    assert.match(summary.line, /1 skipped because this client cannot drive them/);
+});
+
+test("a run with nothing to report keeps the original completion line", () => {
+    const summary = summarizeRun(outcomesOf());
+
+    assert.equal(summary.line, "All available quests are completed!");
+    assert.equal(summary.playDone, true);
 });
