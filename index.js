@@ -207,6 +207,19 @@
     const taskKeys = (tasks) => (tasks instanceof Map ? [...tasks.keys()] : Object.keys(tasks ?? {}));
     const taskAt = (tasks, key) => (tasks instanceof Map ? tasks.get(key) : tasks?.[key]);
 
+    // Discord's current taskConfigV2 is authoritative when it carries tasks. Some payloads keep
+    // the legacy taskConfig beside it, and nullish-coalescing legacy first routes the quest
+    // through stale task/app metadata, which is how this script and the plugin could reach
+    // different answers about the same quest. Same rule as selectQuestTaskConfig in
+    // questConfig.ts, which has regression tests for it.
+    const selectTaskConfig = (config) => {
+        const current = config?.taskConfigV2;
+        if (taskKeys(current?.tasks).length > 0) return current;
+        const legacy = config?.taskConfig;
+        if (taskKeys(legacy?.tasks).length > 0) return legacy;
+        return current ?? legacy ?? null;
+    };
+
     // Task keys Discord validates somewhere this script cannot reach, mapped to why.
     // ACHIEVEMENT_IN_GAME is not ACHIEVEMENT_IN_ACTIVITY: no embedded activity, no discordsays
     // backend to report progress to, so the bypass has nothing to authorize against. The quest
@@ -256,6 +269,38 @@
         if ((type === 'GAME' || type === 'STREAM') && !appId) return `"${name}" has no application id in its config, so the game cannot be spoofed.`;
 
         return null;
+    };
+
+    /*
+     * What happened to a quest, recorded where the run decides it. Completed wins over an earlier
+     * blocked or failed: a quest this client could not drive and the user then finished by hand is
+     * finished, and must not be counted in both columns.
+     */
+    const recordOutcome = (outcomes, id, outcome) => {
+        if (outcomes.get(id) === 'completed') return;
+        outcomes.set(id, outcome);
+    };
+
+    /*
+     * The wrap-up for a run with nothing left to do. failTask puts a quest in the skipped set as
+     * surely as questBlocker does, so a run whose only quest died in a handler used to empty the
+     * active list and announce that every quest was completed, with the done sound.
+     */
+    const summarizeRun = (outcomes) => {
+        let finished = 0, blocked = 0, failed = 0;
+        for (const outcome of outcomes.values()) {
+            if (outcome === 'completed') finished++;
+            else if (outcome === 'blocked') blocked++;
+            else failed++;
+        }
+
+        if (!blocked && !failed) return { finished, blocked, failed, line: 'All available quests are completed!', playDone: true };
+
+        const parts = [];
+        if (finished) parts.push(`${finished} quest(s) finished`);
+        if (blocked) parts.push(`${blocked} skipped because this client cannot drive them`);
+        if (failed) parts.push(`${failed} failed`);
+        return { finished, blocked, failed, line: `Nothing left to run. ${parts.join(', ')}.`, playDone: finished > 0 };
     };
 
     const futureDate = (raw) => {
@@ -823,7 +868,7 @@
                 const REWARD_FALLBACK = { label: "OTHER", color: "#949ba4" };
 
                 quests.forEach(q => {
-                    const cfg = q.config?.taskConfig ?? q.config?.taskConfigV2;
+                    const cfg = selectTaskConfig(q.config);
                     if (!cfg?.tasks) return;
 
                     const typeData = Tasks.detectType(cfg, q.config?.application?.id);
@@ -1291,6 +1336,10 @@
 
     const Tasks = {
         skipped: new Set(),  // quest IDs that returned 4xx, no point retrying
+        // What happened to each quest this run. The closing line counts these rather than
+        // quests that gained completedAt while the run was alive, which cannot tell this
+        // script's work from the user finishing the same quest by hand.
+        outcomes: new Map(),
         _streamReal: undefined,  // untouched StreamStore method, captured before the first spoof
         _streamSpoofs: 0,        // active STREAM tasks holding the spoof
 
@@ -1424,6 +1473,9 @@
             Logger.updateTask(q.id, { name: t.name, type: t.type, cur: currentProgress, max: t.target, status: "FAILED" });
             Logger.log(`[Task] Aborted "${t.name}": ${reason}`, 'err');
             Tasks.skipped.add(q.id);
+            // The active filter reads the skipped set and nothing else, so a quest that died
+            // here leaves the rotation exactly like one this client never could drive.
+            recordOutcome(Tasks.outcomes, q.id, 'failed');
             setTimeout(() => Logger.removeTask(q.id), 2000); 
         },
 
@@ -2094,6 +2146,8 @@
 
         async finish(q, t) {
             Logger.updateTask(q.id, { name: t.name, type: t.type, cur: t.target, max: t.target, status: "COMPLETED" });
+            // The one place the run knows a quest finished because of its own work.
+            recordOutcome(Tasks.outcomes, q.id, 'completed');
             Logger.log(`[Task] Completed "${t.name}"!`, 'success');
             Sound.play('tick');
 
@@ -2449,12 +2503,6 @@
         }
 
         let loopCount = 1;
-        // Quests this client cannot drive, counted across the whole run so the closing
-        // line does not report them as completed.
-        let unrunnable = 0;
-        // Quest ids Discord had already finished when this run started. A run that farms one quest
-        // and skips another cannot otherwise tell its own work from work finished last week.
-        let completedAtStart = null;
 
         while (RUNTIME.running) {
             try {
@@ -2478,7 +2526,6 @@
                 }
 
                 quests = getQuests();
-                if (!completedAtStart) completedAtStart = new Set(quests.filter(q => q.userStatus?.completedAt).map(q => q.id));
 
                 // Filter out completed, expired, blacklisted, skipped, AND unselected quests
                 const active = quests.filter(q =>
@@ -2490,19 +2537,13 @@
                 );
 
                 if (!active.length) {
-                    // Saying "all completed" here is how a skipped quest reads as a finished one.
-                    // A run that skipped something can still have farmed something, so count what
-                    // it finished and keep the done sound for that case.
-                    if (unrunnable > 0) {
-                        const finished = quests.filter(q => q.userStatus?.completedAt && !completedAtStart.has(q.id)).length;
-                        Logger.log(finished > 0
-                            ? `[System] Nothing left to run. ${finished} quest(s) finished, ${unrunnable} skipped because this client cannot drive them.`
-                            : `[System] Nothing left to run. ${unrunnable} quest(s) were skipped because this client cannot drive them.`, 'warn');
-                        if (finished > 0) Sound.play('done');
-                        break;
-                    }
-                    Logger.log('[System] All available quests are completed!', 'success');
-                    Sound.play('done');
+                    // Saying "all completed" here is how a quest this client skipped, or one that
+                    // died in a handler, used to read as a finished one. The counts come from what
+                    // the run recorded as it went, not from which quests gained completedAt while
+                    // it was alive, which cannot tell this script's work from the user's.
+                    const summary = summarizeRun(Tasks.outcomes);
+                    Logger.log(`[System] ${summary.line}`, summary.blocked || summary.failed ? 'warn' : 'success');
+                    if (summary.playDone) Sound.play('done');
                     break;
                 }
 
@@ -2510,7 +2551,7 @@
 
                 active.forEach(q => {
                     try {
-                        const cfg = q.config?.taskConfig ?? q.config?.taskConfigV2;
+                        const cfg = selectTaskConfig(q.config);
                         const questName = q.config?.messages?.questName ?? q.id;
                         const hasTaskConfig = !!cfg?.tasks && typeof cfg.tasks === 'object';
                         const typeData = hasTaskConfig ? Tasks.detectType(cfg, q.config?.application?.id) : null;
@@ -2526,7 +2567,7 @@
                             // Marking the quest skipped is the point: the active filter reads this
                             // set, and without it the same quest comes back every cycle (issue #78).
                             Tasks.skipped.add(q.id);
-                            unrunnable++;
+                            recordOutcome(Tasks.outcomes, q.id, 'blocked');
                             return;
                         }
 
