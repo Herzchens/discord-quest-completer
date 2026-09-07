@@ -82,8 +82,26 @@ export interface FakeGame {
     isLauncher: boolean;
 }
 
+/** Terminal outcome of one quest in one run. */
+export type QuestOutcome = "completed" | "blocked" | "failed";
+
+/** Counts and wrap-up wording for a run with nothing left to do. */
+export interface RunSummary {
+    finished: number;
+    blocked: number;
+    failed: number;
+    line: string;
+    playDone: boolean;
+}
+
 export interface OrionRuntime {
     running: boolean;
     cleanups: Set<() => void>;
     skipped: Set<string>;
+    /**
+     * What actually happened to each quest this run, written where the run decides it.
+     * The wrap-up used to reconstruct this from completedAt, which cannot tell Orion's
+     * work from the user finishing the same quest by hand.
+     */
+    outcomes: Map<string, QuestOutcome>;
 }

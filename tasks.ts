@@ -13,7 +13,7 @@ import type { PluginNative } from "@utils/types";
 import { HeartbeatWatchdog } from "./heartbeatWatchdog";
 import { cleanupCreatedOAuthGrants } from "./oauthLifecycle";
 import type { Patcher } from "./patcher";
-import { isConsoleOnly, selectTaskFamily, taskEntries, taskForKey } from "./questConfig";
+import { isConsoleOnly, recordOutcome, selectTaskFamily, taskEntries, taskForKey } from "./questConfig";
 import { settings } from "./settings";
 import type { TaskLifecycle } from "./taskControl";
 import type { Traffic } from "./traffic";
@@ -243,6 +243,10 @@ export class TaskRunner {
         this.cb.onProgress(q.id, { name: t.name, type: t.type, cur: 0, max: t.target, status: "FAILED", reason });
         logger.error(`[Task] Aborted "${t.name}": ${reason}`);
         this.skipped.add(q.id);
+        // activeQuests reads the skipped set and nothing else, so a quest that died here leaves
+        // the rotation exactly like one this client never could drive. The wrap-up has to tell
+        // the two apart, or a run whose only quest failed announces that everything completed.
+        recordOutcome(this.runtime.outcomes, q.id, "failed");
     }
 
     async VIDEO(q: Quest, t: TaskInfo, s: any): Promise<void> {
@@ -662,7 +666,13 @@ export class TaskRunner {
 
     retryConsentSkipped(): number {
         let restored = 0;
-        for (const id of this.consentSkipped) if (this.skipped.delete(id)) restored++;
+        for (const id of this.consentSkipped) {
+            if (!this.skipped.delete(id)) continue;
+            // The quest is going back into the rotation, so the failure recorded while consent
+            // was off must not survive into the wrap-up counts.
+            this.runtime.outcomes.delete(id);
+            restored++;
+        }
         this.consentSkipped.clear();
         return restored;
     }

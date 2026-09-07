@@ -16,7 +16,7 @@ import { FluxDispatcher, RestAPI } from "@webpack/common";
 import { isConfirmedDifferentAccount } from "./accountIdentity";
 import { setAchievementBypassHook } from "./hooks";
 import { Patcher } from "./patcher";
-import { selectQuestTaskConfig } from "./questConfig";
+import { questBlocker, recordOutcome, selectQuestTaskConfig, summarizeRun, taskEntries } from "./questConfig";
 import { settings } from "./settings";
 import { TaskControlRegistry, type TaskLifecycle } from "./taskControl";
 import { TaskRunner } from "./tasks";
@@ -82,6 +82,7 @@ const RUNTIME: OrionRuntime = {
     running: false,
     cleanups: new Set<() => void>(),
     skipped: new Set<string>(),
+    outcomes: new Map(),
 };
 
 let nextRunId = 0;
@@ -415,6 +416,9 @@ async function onTaskComplete(
     if (!isTaskActive(runId, runRuntime, controlled)) return;
 
     setEntry(q.id, { name: t.name, type: t.type, cur: t.target, max: t.target, status: "COMPLETED" });
+    // The one place the run knows a quest finished because of its own work. Everything the
+    // wrap-up says about this run is counted from here, failTask and the blocker below.
+    recordOutcome(runRuntime.outcomes, q.id, "completed");
     logger.info(`[Task] Completed "${t.name}"!`);
     Sound.play("tick");
 
@@ -578,11 +582,24 @@ async function mainLoop(
                     lastRunOutcome = "Discord never sent a quest list to this client, so there was nothing to run.";
                     break;
                 }
-                logger.info("[System] All available quests are completed!");
-                lastRunOutcome = loopCount === 1
-                    ? "every quest you can run is already finished, so there was nothing to farm."
-                    : "every quest it could run is now finished.";
-                Sound.play("done");
+                // Saying "all completed" here is how a quest this client skipped, or one that
+                // died in a handler, used to read as a finished one. The counts come from what
+                // the run recorded as it went, not from which quests gained completedAt while
+                // it was alive, which cannot tell Orion's work from the user's.
+                const summary = summarizeRun(runRuntime.outcomes);
+                logger.info(`[System] ${summary.line}`);
+                if (summary.blocked || summary.failed) {
+                    const parts: string[] = [];
+                    if (summary.finished) parts.push(`${summary.finished} quest(s) finished`);
+                    if (summary.blocked) parts.push(`${summary.blocked} were skipped because this client cannot drive them`);
+                    if (summary.failed) parts.push(`${summary.failed} failed`);
+                    lastRunOutcome = `${parts.join(", ")}.`;
+                } else {
+                    lastRunOutcome = loopCount === 1
+                        ? "every quest you can run is already finished, so there was nothing to farm."
+                        : "every quest it could run is now finished.";
+                }
+                if (summary.playDone) Sound.play("done");
                 break;
             }
 
@@ -596,32 +613,29 @@ async function mainLoop(
                     if (taskControls.get(q.id)) continue;
 
                     const cfg = selectQuestTaskConfig(q.config);
-                    if (!cfg?.tasks || typeof cfg.tasks !== "object") {
-                        logger.warn(`[Quest] ${q.id} has invalid task config. Skipping.`);
-                        continue;
-                    }
-
-                    const detected = runTasks.detectType(cfg, q.config?.application?.id);
-                    if (!detected) {
-                        logger.warn(`[Quest] Unknown task type: ${q.config?.messages?.questName ?? q.id}`);
-                        continue;
-                    }
-                    if (!IS_DESKTOP && (detected.type === "GAME" || detected.type === "STREAM")) {
-                        logger.warn(`[Quest] "${q.config?.messages?.questName ?? q.id}" requires desktop app. Skipping.`);
-                        continue;
-                    }
-
-                    const { type, keyName, target, appId } = detected;
-                    if (target <= 0) {
-                        logger.warn(`[Quest] Invalid target (${target}) for ${q.id}. Skipping.`);
-                        continue;
-                    }
-                    if ((type === "GAME" || type === "STREAM") && !appId) {
-                        logger.warn(`[Quest] "${q.config?.messages?.questName ?? q.id}" has no application id in its config, so the game cannot be spoofed. Skipping.`);
+                    const questName = q.config?.messages?.questName ?? q.id;
+                    const hasTaskConfig = !!cfg?.tasks && typeof cfg.tasks === "object";
+                    const detected = hasTaskConfig ? runTasks.detectType(cfg, q.config?.application?.id) : null;
+                    const blocker = questBlocker({
+                        name: questName,
+                        hasTaskConfig,
+                        keys: taskEntries(cfg?.tasks).map(([key]) => key),
+                        detected,
+                        isDesktop: IS_DESKTOP,
+                    });
+                    if (blocker) {
+                        logger.warn(`[Quest] ${blocker} Skipping it for the rest of this run.`);
+                        // Marking the quest skipped is the whole point: activeQuests filters on
+                        // this set, and without it the same quest comes back every cycle and the
+                        // run loops on it until the user pauses (issue #78).
                         runRuntime.skipped.add(q.id);
                         runTasks.skipped.add(q.id);
+                        recordOutcome(runRuntime.outcomes, q.id, "blocked");
                         continue;
                     }
+
+                    // questBlocker returns a sentence for every null detection, so by here it is set.
+                    const { type, keyName, target, appId } = detected!;
 
                     // RUNNING without a control is never expected after the worker recovery below,
                     // so keep that guard strict. QUEUE is different: Resume intentionally leaves a
@@ -712,6 +726,9 @@ async function mainLoop(
                                         });
                                         runRuntime.skipped.add(q.id);
                                         runTasks.skipped.add(q.id);
+                                        // This path skips the quest without going through
+                                        // failTask, so it has to record the outcome itself.
+                                        recordOutcome(runRuntime.outcomes, q.id, "failed");
                                     }
                                 }
                                 throw error;
@@ -782,6 +799,7 @@ export async function startOrion(): Promise<void> {
         running: true,
         cleanups: new Set<() => void>(),
         skipped: new Set<string>(),
+        outcomes: new Map(),
     };
 
     activeRunId = runId;
@@ -789,6 +807,7 @@ export async function startOrion(): Promise<void> {
     RUNTIME.running = true;
     RUNTIME.cleanups = runRuntime.cleanups;
     RUNTIME.skipped = runRuntime.skipped;
+    RUNTIME.outcomes = runRuntime.outcomes;
 
     for (const [id, e] of dashboard) {
         if (e.status !== "RUNNING" && e.status !== "QUEUE" && e.status !== "PAUSED") dashboard.delete(id);
@@ -897,6 +916,7 @@ export function stopOrion(): void {
     cleanups.clear();
     RUNTIME.cleanups = new Set<() => void>();
     RUNTIME.skipped = new Set<string>();
+    RUNTIME.outcomes = new Map();
 
     SettingsStore.removeChangeListener(hideActivityPath(), onHideActivityChanged);
 

@@ -60,6 +60,7 @@ Orion reads Discord's own webpack stores and drives Discord's own authenticated 
 | `STREAM_ON_DESKTOP` | **Does not work.** Same idea, plus a spoofed `getStreamerActiveStreamMetadata`, but Discord checks two other things first and the quest never gets a heartbeat. See below. |
 | `WATCH_VIDEO`, `WATCH_VIDEO_ON_MOBILE` | Posts video progress timestamps on a randomized interval, with the fractional values a real player would send. |
 | `PLAY_ACTIVITY` | Heartbeats against a voice channel stream key. |
+| `ACHIEVEMENT_IN_GAME` | **Not possible.** The achievement is earned in the retail game with the game linked to your account, and nothing in Discord can stand in for that. Named in the log and skipped. |
 | `ACHIEVEMENT_IN_ACTIVITY` | Tries the heartbeat first. Discord rejects those with a 403, because the activity backend validates them rather than the client, so it falls back to the OAuth path described below. |
 
 Where the quest's application id lives moved in July 2026, from `config.application.id` to per task at `config.taskConfigV2.tasks.<KEY>.applications[0].id`. Reading the old path fails silently rather than loudly, which is what broke every tool in this space at once. See [#43](https://github.com/nyxxbit/discord-quest-completer/issues/43).
@@ -106,6 +107,7 @@ The plugin has the same options as real settings, plus auto-start, per-type conc
 |---|---|
 | 429 or 5xx | Exponential backoff and re-queue, up to 3 retries. Global and per-endpoint limits are tracked separately. |
 | 404 or 403 on enroll | Quest goes on a skip list and the run continues. |
+| A quest this client cannot drive | Named in the log with the task keys it offered, then skipped for the rest of the run rather than picked up again on the next cycle. |
 | 5 consecutive failures on one task | That task is abandoned, the rest keep going. |
 | A game quest gets nothing from Discord for 90s | Aborted with a reason, instead of sitting there until the timeout. A beat that Discord tried and failed is not silence: it resets the wait, and five in a row is what gives up. |
 | 25 minutes on one task | Hard stop, next quest. |

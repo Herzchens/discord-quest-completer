@@ -126,6 +126,18 @@ Making it work means faking conditions 1 and 2 as well, and then finding out whe
 
 This matters because the failure is silent. Reading only the legacy field yields `0`/`null`, which produced a fake process Discord could never match to the quest (no heartbeat, quest frozen at 0%) and made the achievement bypass return early without attempting anything ([#43](https://github.com/nyxxbit/discord-quest-completer/issues/43)). Game/stream quests with no resolvable id are now skipped loudly instead of run, and a game/stream task that gets no dispatch within 90s of the last one aborts with a reason rather than idling until the 25-minute timeout.
 
+### A quest we cannot run is skipped, not re-read
+
+The scheduler asks five questions before it queues a quest: does it have a usable task config, does any of its task keys map to a handler, can this client type run that handler, is the target a real number, and does a game or stream quest carry an application id to impersonate. All five answers are fixed for the life of a run. Nothing that would change them can change while Orion is running.
+
+They used to be five separate guards that logged and moved on. Only the application-id one put the quest on the skip list, and the active filter reads nothing else, so the other four handed the same quest back on the next cycle, and the one after that, for as long as the run lasted. A Battlefield 6 quest did that once a cycle until the user stopped it ([#78](https://github.com/nyxxbit/discord-quest-completer/issues/78)). It is unrunnable for a real reason: the game has to be linked to the account and actually played.
+
+The five questions are now one answer, `questBlocker`, which returns the reason as the sentence to log or null when the quest can run. The caller skips whatever it names. Keeping the decision and the marking in one place is what stops a sixth reason being added without the skip.
+
+The log line carries the task keys the quest offered, because "Unknown task type" told nobody anything, and a console-only quest reads differently from one whose task type has no handler here. Keys we know are validated outside the client sit in `UNAUTOMATABLE_KEYS` with the reason attached. `ACHIEVEMENT_IN_GAME` is the first of them, read off the Battlefield 6 Multiplayer quest in #78: it is not `ACHIEVEMENT_IN_ACTIVITY`, there is no embedded activity and no `discordsays` backend behind it, so the OAuth bypass has nothing to authorize against and the quest wants an achievement earned in the retail game. A run that ends with nothing left to do says how many quests it could not drive instead of announcing that everything is complete, and it counts what it actually finished against the quests Discord had already marked complete when the run started, so a run that farmed one quest and skipped another still reports the one it finished and plays the sound for it.
+
+The userscript carries the same helper, and there it is mostly insurance. Its quest picker drops a quest with no task config, no detectable type, or a desktop-only type before the list is ever shown ([`index.js`](../index.js), the `quests.forEach` that builds `items`), and the run loop only looks at quests the picker returned. So on that side only the target and application-id reasons can reach the log today. The plugin has no picker, which is why #78 was a plugin report.
+
 ### What the 90 second watchdog is counting
 
 Discord beats every 60 seconds. `QuestProgressManager.calculateHeartbeatDurationMs` returns a flat `Millis.MINUTE` until under a minute of the target remains, measured at 60108ms on a live game quest, and the sender does not retry: a failed beat dispatches `QUESTS_SEND_HEARTBEAT_FAILURE` and the next attempt is the tick already scheduled 60s out.
