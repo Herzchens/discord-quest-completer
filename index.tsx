@@ -10,6 +10,7 @@
 import { ApplicationCommandInputType, ApplicationCommandOptionType, sendBotMessage } from "@api/Commands";
 import definePlugin from "@utils/types";
 
+import { subscribeCompanionEvents, type CompanionEventListener } from "./companionEvents";
 import { setWatchForEnrollmentsHook } from "./hooks";
 import {
     getCurrentUserId,
@@ -450,6 +451,12 @@ export default definePlugin({
 
     subscribeControlState(listener: () => void): () => void {
         return subscribeDashboard(listener);
+    },
+
+    // Additive read-only diagnostics capability. Older companions keep using the existing
+    // control surface and console fallback; consumers feature-detect this method independently.
+    subscribeEvents(listener: CompanionEventListener): () => void {
+        return subscribeCompanionEvents(listener);
     },
 
     async controlEngine(action: "start" | "stop"): Promise<string> {

@@ -14,6 +14,7 @@ import { findByProps, findStore } from "@webpack";
 import { FluxDispatcher, RestAPI } from "@webpack/common";
 
 import { isConfirmedDifferentAccount } from "./accountIdentity";
+import { companionFailure, COMPANION_EVENT_CODES, emitCompanionEvent } from "./companionEvents";
 import { setAchievementBypassHook } from "./hooks";
 import { Patcher } from "./patcher";
 import { questBlocker, recordOutcome, selectQuestTaskConfig, summarizeRun, taskEntries } from "./questConfig";
@@ -107,9 +108,29 @@ let sessionOwnerUserId: string | null = null;
  */
 let lastRunOutcome: string | null = null;
 let accountResetInProgress = false;
+let dashboardDispatchDepth = 0;
+let stopQueued = false;
+
+function retryableHttpStatus(error: any): boolean {
+    const status = error?.status ?? error?.statusCode ?? error?.httpStatus;
+    return status === 408 || status === 429 || status >= 500;
+}
+
+function failureFromError(error: any, terminal: boolean, retryable: boolean, reason: string): ReturnType<typeof companionFailure> {
+    const rawStatus = error?.status ?? error?.statusCode ?? error?.httpStatus;
+    const rawCode = error?.body?.code ?? error?.code;
+    return companionFailure({
+        terminal,
+        retryable,
+        httpStatus: Number.isFinite(rawStatus) ? Number(rawStatus) : null,
+        upstreamCode: typeof rawCode === "string" || typeof rawCode === "number" ? rawCode : null,
+        reason,
+    });
+}
 
 function isRunActive(runId: number, runRuntime: OrionRuntime): boolean {
-    return RUNTIME.running
+    return !stopQueued
+        && RUNTIME.running
         && runRuntime.running
         && activeRunId === runId
         && activeRuntime === runRuntime;
@@ -166,8 +187,13 @@ export function getCurrentUserId(): string | null {
 }
 
 function emitDashboard(): void {
-    for (const fn of dashboardListeners) {
-        try { fn(); } catch (e: any) { debug(logger, `[UI] listener threw: ${e?.message}`); }
+    dashboardDispatchDepth++;
+    try {
+        for (const fn of dashboardListeners) {
+            try { fn(); } catch (e: any) { debug(logger, `[UI] listener threw: ${e?.message}`); }
+        }
+    } finally {
+        dashboardDispatchDepth--;
     }
 }
 
@@ -189,6 +215,12 @@ function removeEntry(id: string): void {
 export function resetForAccountChange(): void {
     if (accountResetInProgress) return;
     accountResetInProgress = true;
+    emitCompanionEvent({
+        code: COMPANION_EVENT_CODES.SYSTEM_ACCOUNT_CHANGED,
+        category: "system",
+        level: "warning",
+        message: "Discord account changed; Orion is clearing account-scoped runtime state.",
+    });
 
     try {
         // Observable account-owned state goes first. stopOrion() emits synchronously, and a
@@ -419,6 +451,15 @@ async function onTaskComplete(
     // The one place the run knows a quest finished because of its own work. Everything the
     // wrap-up says about this run is counted from here, failTask and the blocker below.
     recordOutcome(runRuntime.outcomes, q.id, "completed");
+    emitCompanionEvent({
+        code: COMPANION_EVENT_CODES.TASK_COMPLETED,
+        category: "task",
+        level: "success",
+        message: `Task completed for "${t.name}".`,
+        questId: q.id,
+        questName: t.name,
+        taskType: t.type,
+    });
     logger.info(`[Task] Completed "${t.name}"!`);
     Sound.play("tick");
 
@@ -435,6 +476,15 @@ async function onTaskComplete(
             if (!isTaskActive(runId, runRuntime, controlled)) return;
             if (claimRes?.body?.claimed_at) {
                 logger.info(`[Claim] Reward for "${t.name}" claimed automatically!`);
+                emitCompanionEvent({
+                    code: COMPANION_EVENT_CODES.CLAIM_SUCCEEDED,
+                    category: "claim",
+                    level: "success",
+                    message: `Reward claimed automatically for "${t.name}".`,
+                    questId: q.id,
+                    questName: t.name,
+                    taskType: t.type,
+                });
                 setEntry(q.id, { name: t.name, type: t.type, cur: t.target, max: t.target, status: "CLAIMED" });
                 const claimedEntry = dashboard.get(q.id);
                 setTimeout(() => {
@@ -445,8 +495,34 @@ async function onTaskComplete(
         } catch (e: any) {
             if (!isTaskActive(runId, runRuntime, controlled)) return;
             const needsCaptcha = e?.body?.captcha_key || e?.body?.captcha_sitekey;
-            if (needsCaptcha) logger.warn(`[Claim] Captcha required for "${t.name}". Use Discord's UI button.`);
-            else logger.error(`[Claim] Auto-claim failed for "${t.name}": ${e?.body?.message ?? e?.message}`);
+            if (needsCaptcha) {
+                const reason = "Captcha required; claim the reward in Discord's UI";
+                logger.warn(`[Claim] Captcha required for "${t.name}". Use Discord's UI button.`);
+                emitCompanionEvent({
+                    code: COMPANION_EVENT_CODES.CLAIM_ACTION_REQUIRED,
+                    category: "claim",
+                    level: "warning",
+                    message: `Reward claim for "${t.name}" requires user action in Discord.`,
+                    questId: q.id,
+                    questName: t.name,
+                    taskType: t.type,
+                    reason,
+                });
+            } else {
+                const reason = String(e?.body?.message ?? e?.message ?? "Claim request failed");
+                logger.error(`[Claim] Auto-claim failed for "${t.name}": ${reason}`);
+                emitCompanionEvent({
+                    code: COMPANION_EVENT_CODES.CLAIM_FAILED,
+                    category: "claim",
+                    level: "error",
+                    message: `Automatic reward claim failed for "${t.name}".`,
+                    questId: q.id,
+                    questName: t.name,
+                    taskType: t.type,
+                    reason,
+                    failure: failureFromError(e, true, retryableHttpStatus(e), reason),
+                });
+            }
         }
     }
 
@@ -476,6 +552,12 @@ function awaitQuestList(runId: number, runRuntime: OrionRuntime, runStores: Stor
     if (getQuestsArray(runStores.QuestStore).length > 0) return Promise.resolve();
 
     logger.info("[Startup] Discord has not sent its quest list yet. Waiting for it before the first cycle.");
+    emitCompanionEvent({
+        code: COMPANION_EVENT_CODES.STARTUP_QUEST_LIST_WAITING,
+        category: "startup",
+        level: "info",
+        message: "Waiting for Discord to provide the current Quest list before the first cycle.",
+    });
     const waitingSince = Date.now();
 
     return new Promise<void>(resolve => {
@@ -491,7 +573,19 @@ function awaitQuestList(runId: number, runRuntime: OrionRuntime, runStores: Stor
             try { runStores.Dispatcher?.unsubscribe?.(QUEST_LIST_EVT, onFetched); }
             catch (e) { debug(logger, `[Startup] Failed to detach the quest list listener: ${(e as any)?.message ?? e}`); }
             const found = getQuestsArray(runStores.QuestStore).length;
-            if (found > 0) logger.info(`[Startup] Quest list arrived after ${Date.now() - waitingSince}ms, ${found} quest(s).`);
+            // Stop/account-switch invalidates this run synchronously. A fetch that settles in the
+            // same turn must still clean up its listener/timers, but it must not publish an event
+            // for a generation Orion no longer owns.
+            if (isRunActive(runId, runRuntime) && found > 0) {
+                const elapsed = Date.now() - waitingSince;
+                logger.info(`[Startup] Quest list arrived after ${elapsed}ms, ${found} quest(s).`);
+                emitCompanionEvent({
+                    code: COMPANION_EVENT_CODES.STARTUP_QUEST_LIST_ARRIVED,
+                    category: "startup",
+                    level: "info",
+                    message: `Discord provided ${found} Quest(s) after ${elapsed}ms.`,
+                });
+            }
             resolve();
         };
 
@@ -509,7 +603,18 @@ function awaitQuestList(runId: number, runRuntime: OrionRuntime, runStores: Stor
         }, 250);
 
         timer = setTimeout(() => {
-            logger.warn(`[Startup] Discord had not sent a quest list after ${Math.round(QUEST_LIST_WAIT_MS / 1000)}s. Continuing with what the store holds.`);
+            if (!isRunActive(runId, runRuntime)) {
+                finish();
+                return;
+            }
+            const seconds = Math.round(QUEST_LIST_WAIT_MS / 1000);
+            logger.warn(`[Startup] Discord had not sent a quest list after ${seconds}s. Continuing with what the store holds.`);
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.STARTUP_QUEST_LIST_TIMEOUT,
+                category: "startup",
+                level: "warning",
+                message: `Discord had not provided a Quest list after ${seconds}s; Orion is continuing with current store state.`,
+            });
             finish();
         }, QUEST_LIST_WAIT_MS);
     });
@@ -543,12 +648,25 @@ async function mainLoop(
             }
 
             logger.info(`[Cycle] Starting loop #${loopCount}...`);
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.CYCLE_STARTED,
+                category: "cycle",
+                level: "info",
+                message: `Starting Quest scan cycle #${loopCount}.`,
+            });
 
             const suspendedUntil = questAccessSuspendedUntil(runStores.QuestStore);
             if (suspendedUntil) {
                 const when = suspendedUntil.getTime() === 0 ? "for now" : `until ${suspendedUntil.toLocaleString()}`;
                 logger.error(`[System] Discord has suspended quest access on this account ${when}. Its own client refuses to start a quest in this state, so Orion stops too.`);
                 lastRunOutcome = `Discord has suspended quest access on this account ${when}, so nothing was started.`;
+                emitCompanionEvent({
+                    code: COMPANION_EVENT_CODES.SYSTEM_QUEST_ACCESS_SUSPENDED,
+                    category: "system",
+                    level: "error",
+                    message: `Discord has suspended Quest access on this account ${when}; Orion is stopping.`,
+                    reason: lastRunOutcome,
+                });
                 break;
             }
 
@@ -556,6 +674,13 @@ async function mainLoop(
             if (blockedUntil) {
                 logger.error(`[System] Discord has blocked quest enrollment on this account until ${blockedUntil.toLocaleString()}. Stopping instead of retrying.`);
                 lastRunOutcome = `Discord has blocked quest enrollment on this account until ${blockedUntil.toLocaleString()}, so nothing was started.`;
+                emitCompanionEvent({
+                    code: COMPANION_EVENT_CODES.SYSTEM_ENROLLMENT_BLOCKED,
+                    category: "system",
+                    level: "error",
+                    message: `Discord has blocked Quest enrollment on this account until ${blockedUntil.toLocaleString()}; Orion is stopping.`,
+                    reason: lastRunOutcome,
+                });
                 break;
             }
 
@@ -580,6 +705,13 @@ async function mainLoop(
                 if (!all.length) {
                     logger.warn("[System] Discord has not given this client a quest list, so there is nothing to run. Reload Discord and try again.");
                     lastRunOutcome = "Discord never sent a quest list to this client, so there was nothing to run.";
+                    emitCompanionEvent({
+                        code: COMPANION_EVENT_CODES.SYSTEM_QUEST_LIST_MISSING,
+                        category: "system",
+                        level: "warning",
+                        message: "Discord did not provide a Quest list, so Orion has nothing to run.",
+                        reason: lastRunOutcome,
+                    });
                     break;
                 }
                 // Saying "all completed" here is how a quest this client skipped, or one that
@@ -588,6 +720,12 @@ async function mainLoop(
                 // it was alive, which cannot tell Orion's work from the user's.
                 const summary = summarizeRun(runRuntime.outcomes);
                 logger.info(`[System] ${summary.line}`);
+                emitCompanionEvent({
+                    code: COMPANION_EVENT_CODES.SYSTEM_RUN_SUMMARY,
+                    category: "system",
+                    level: summary.failed > 0 ? "warning" : "info",
+                    message: summary.line,
+                });
                 if (summary.blocked || summary.failed) {
                     const parts: string[] = [];
                     if (summary.finished) parts.push(`${summary.finished} quest(s) finished`);
@@ -625,6 +763,16 @@ async function mainLoop(
                     });
                     if (blocker) {
                         logger.warn(`[Quest] ${blocker} Skipping it for the rest of this run.`);
+                        emitCompanionEvent({
+                            code: COMPANION_EVENT_CODES.QUEST_BLOCKED,
+                            category: "quest",
+                            level: "info",
+                            message: `Orion left "${questName}" out of this run because this client cannot drive it.`,
+                            questId: q.id,
+                            questName,
+                            taskType: detected?.type,
+                            reason: blocker,
+                        });
                         // Marking the quest skipped is the whole point: activeQuests filters on
                         // this set, and without it the same quest comes back every cycle and the
                         // run loops on it until the user pauses (issue #78).
@@ -656,6 +804,16 @@ async function mainLoop(
                     if (!q.userStatus?.enrolledAt && !settings.store.autoEnroll) {
                         if (dashboard.get(q.id)?.status !== "PENDING") {
                             logger.info(`[Enroll] Auto-enroll is off, waiting for you to accept "${t.name}" in Discord.`);
+                            emitCompanionEvent({
+                                code: COMPANION_EVENT_CODES.ENROLL_WAITING,
+                                category: "enroll",
+                                level: "info",
+                                message: `Waiting for you to accept "${t.name}" in Discord.`,
+                                questId: q.id,
+                                questName: t.name,
+                                taskType: t.type,
+                                reason: "Auto-enroll is disabled",
+                            });
                         }
                         setEntry(t.id, { name: t.name, type: t.type, cur: 0, max: t.target, status: "PENDING", actionRequired: "ENROLL" });
                         continue;
@@ -670,6 +828,15 @@ async function mainLoop(
 
                         if (!q.userStatus?.enrolledAt) {
                             logger.info(`[Enroll] Accepting quest: ${t.name}`);
+                            emitCompanionEvent({
+                                code: COMPANION_EVENT_CODES.ENROLL_STARTED,
+                                category: "enroll",
+                                level: "info",
+                                message: `Accepting "${t.name}" through Discord's Quest API.`,
+                                questId: q.id,
+                                questName: t.name,
+                                taskType: t.type,
+                            });
                             try {
                                 await runTraffic.enqueue(`/quests/${q.id}/enroll`, {
                                     location: 11,
@@ -681,14 +848,28 @@ async function mainLoop(
                                 if (!await waitForControlledTaskDelay(runId, runRuntime, t, rnd(800, 1500))) return;
                             } catch (e: any) {
                                 if (!isTaskActive(runId, runRuntime, t)) return;
-                                if (isSkippableQuest(e)) {
+                                const skippable = isSkippableQuest(e);
+                                if (skippable) {
                                     runRuntime.skipped.add(q.id);
                                     runTasks.skipped.add(q.id);
                                     logger.warn(`[Enroll] ${t.name} unavailable (${e.status}). Skipping.`);
                                 } else {
                                     logger.error(`[Enroll] Failed for ${t.name}: ${e?.message}`);
                                 }
-                                return runTasks.failTask(q, t, "Enrollment failed");
+                                const reason = skippable ? `Quest unavailable (HTTP ${e?.status ?? "unknown"})` : "Enrollment failed";
+                                const failure = failureFromError(e, true, retryableHttpStatus(e), reason);
+                                emitCompanionEvent({
+                                    code: COMPANION_EVENT_CODES.ENROLL_FAILED,
+                                    category: "enroll",
+                                    level: skippable ? "warning" : "error",
+                                    message: `Enrollment failed for "${t.name}".`,
+                                    questId: q.id,
+                                    questName: t.name,
+                                    taskType: t.type,
+                                    reason,
+                                    failure,
+                                });
+                                return runTasks.failTask(q, t, "Enrollment failed", failure);
                             }
                         }
 
@@ -716,13 +897,25 @@ async function mainLoop(
                                         || current?.status === "CLAIMED"
                                         || current?.status === "FAILED";
                                     if (!terminal) {
+                                        const reason = "Unexpected task error; see console";
                                         setEntry(q.id, {
                                             name: t.name,
                                             type: t.type,
                                             cur: current?.cur ?? 0,
                                             max: t.target,
                                             status: "FAILED",
-                                            reason: "Unexpected task error; see console",
+                                            reason,
+                                        });
+                                        emitCompanionEvent({
+                                            code: COMPANION_EVENT_CODES.TASK_FAILED,
+                                            category: "task",
+                                            level: "error",
+                                            message: `Task failed unexpectedly for "${t.name}".`,
+                                            questId: q.id,
+                                            questName: t.name,
+                                            taskType: t.type,
+                                            reason,
+                                            failure: failureFromError(error, true, retryableHttpStatus(error), reason),
                                         });
                                         runRuntime.skipped.add(q.id);
                                         runTasks.skipped.add(q.id);
@@ -751,6 +944,12 @@ async function mainLoop(
             const total = queues.video.length + queues.game.length;
             if (total > 0 && isRunActive(runId, runRuntime)) {
                 logger.info(`[Cycle] Processing: ${queues.video.length} videos, ${queues.game.length} games.`);
+                emitCompanionEvent({
+                    code: COMPANION_EVENT_CODES.CYCLE_PROCESSING,
+                    category: "cycle",
+                    level: "info",
+                    message: `Cycle #${loopCount} is processing ${queues.video.length} video task(s) and ${queues.game.length} game-lane task(s).`,
+                });
                 await Promise.all([
                     runConcurrent(queues.game, settings.store.gameConcurrency ?? 1, runId, runRuntime),
                     runConcurrent(queues.video, settings.store.videoConcurrency ?? 2, runId, runRuntime),
@@ -761,12 +960,27 @@ async function mainLoop(
 
             if (!isRunActive(runId, runRuntime)) break;
             logger.info(`[Cycle] Loop #${loopCount} complete. Waiting before rescan...`);
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.CYCLE_COMPLETED,
+                category: "cycle",
+                level: "info",
+                message: `Quest scan cycle #${loopCount} completed.`,
+            });
             await sleep(rnd(2500, 4500));
             if (!isRunActive(runId, runRuntime)) break;
             loopCount++;
         } catch (e: any) {
             if (!isRunActive(runId, runRuntime)) break;
-            logger.error(`[Cycle] Error in loop #${loopCount}: ${e?.message ?? e}`);
+            const reason = String(e?.message ?? e);
+            logger.error(`[Cycle] Error in loop #${loopCount}: ${reason}`);
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.CYCLE_FAILED,
+                category: "cycle",
+                level: "error",
+                message: `Quest scan cycle #${loopCount} failed and will be retried.`,
+                reason,
+                failure: failureFromError(e, false, true, reason),
+            });
             await sleep(3000);
             if (!isRunActive(runId, runRuntime)) break;
             loopCount++;
@@ -791,6 +1005,14 @@ export async function startOrion(): Promise<void> {
     if (!startingUserId) {
         logger.error("Cannot start OrionQuests: current Discord user is unavailable.");
         lastRunOutcome = "Discord did not report a logged-in user, so the engine could not start.";
+        emitCompanionEvent({
+            code: COMPANION_EVENT_CODES.ENGINE_START_FAILED,
+            category: "system",
+            level: "error",
+            message: "Orion could not start because Discord did not report a logged-in user.",
+            reason: lastRunOutcome,
+            failure: companionFailure({ terminal: true, retryable: true, reason: lastRunOutcome }),
+        });
         return;
     }
 
@@ -812,7 +1034,14 @@ export async function startOrion(): Promise<void> {
     for (const [id, e] of dashboard) {
         if (e.status !== "RUNNING" && e.status !== "QUEUE" && e.status !== "PAUSED") dashboard.delete(id);
     }
+    emitCompanionEvent({
+        code: COMPANION_EVENT_CODES.ENGINE_STARTED,
+        category: "system",
+        level: "info",
+        message: "Orion engine started.",
+    });
     emitDashboard();
+    if (!isRunActive(runId, runRuntime)) return;
     logger.info("Starting OrionQuests");
 
     try {
@@ -880,7 +1109,16 @@ export async function startOrion(): Promise<void> {
         await mainLoop(runId, runRuntime, runStores, runTasks, runTraffic, runUserId);
     } catch (e: any) {
         if (activeRunId === runId && activeRuntime === runRuntime) {
+            const reason = String(e?.message ?? e);
             logger.error("Fatal:", e);
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.ENGINE_FAILED,
+                category: "system",
+                level: "error",
+                message: "Orion encountered a fatal error after publishing the engine as running.",
+                reason,
+                failure: failureFromError(e, true, retryableHttpStatus(e), reason),
+            });
             runRuntime.running = false;
             RUNTIME.running = false;
         } else {
@@ -894,6 +1132,21 @@ export async function startOrion(): Promise<void> {
 export function stopOrion(): void {
     const runRuntime = activeRuntime;
     if (!RUNTIME.running && !patcher && !stores && !runRuntime) return;
+
+    // Dashboard subscribers run synchronously. If one asks Orion to stop while it is observing
+    // a state publication, mark the run dead immediately so producer liveness guards fire, but
+    // defer destructive cleanup until that producer stack has finished committing its fact/event.
+    if (dashboardDispatchDepth > 0) {
+        if (!stopQueued) {
+            stopQueued = true;
+            queueMicrotask(() => {
+                stopQueued = false;
+                stopOrion();
+            });
+        }
+        return;
+    }
+    stopQueued = false;
 
     activeRunId = 0;
     activeRuntime = null;
@@ -925,15 +1178,30 @@ export function stopOrion(): void {
             dashboard.set(id, { ...e, status: "STOPPED", actionRequired: null });
         }
     }
-    emitDashboard();
 
     setAchievementBypassHook(null);
 
-    try { patcher?.clean(); } catch (e: any) { logger.error("Patcher cleanup threw:", e); }
+    try { patcher?.clean(); }
+    catch (e: any) {
+        failed++;
+        logger.error("Patcher cleanup threw:", e);
+    }
     patcher = null;
     stores = null;
     traffic = null;
     tasks = null;
 
-    logger.info(`Stopped. ${failed > 0 ? `${failed} cleanup(s) threw, see errors above.` : "All cleanups flushed cleanly."}`);
+    const stopMessage = failed > 0 ? `${failed} cleanup(s) threw, see errors above.` : "All cleanups flushed cleanly.";
+    logger.info(`Stopped. ${stopMessage}`);
+    emitCompanionEvent({
+        code: COMPANION_EVENT_CODES.ENGINE_STOPPED,
+        category: "system",
+        level: failed > 0 ? "warning" : "info",
+        message: `Orion engine stopped. ${stopMessage}`,
+        ...(lastRunOutcome ? { reason: lastRunOutcome } : {}),
+    });
+    // Notify control-state consumers only after all old run-owned globals/resources are gone. A
+    // subscriber may synchronously start a new run from this callback without the old stop path
+    // subsequently cleaning or nulling the new run's state.
+    emitDashboard();
 }

@@ -10,6 +10,12 @@
 import { Logger } from "@utils/Logger";
 import type { PluginNative } from "@utils/types";
 
+import {
+    companionFailure,
+    COMPANION_EVENT_CODES,
+    emitCompanionEvent,
+    type CompanionEventFailure,
+} from "./companionEvents";
 import { HeartbeatWatchdog } from "./heartbeatWatchdog";
 import { cleanupCreatedOAuthGrants } from "./oauthLifecycle";
 import type { Patcher } from "./patcher";
@@ -33,25 +39,57 @@ const HEARTBEAT_EVT = "QUESTS_SEND_HEARTBEAT_SUCCESS";
  */
 const HEARTBEAT_FAIL_EVT = "QUESTS_SEND_HEARTBEAT_FAILURE";
 
+interface HeartbeatErrorDetails {
+    text: string;
+    status: number | null;
+    upstreamCode: string | number | null;
+    retryable: boolean;
+}
+
 /**
- * Pull something a user can act on out of a QUESTS_SEND_HEARTBEAT_FAILURE payload. Discord wraps
- * the failure in its own error type, so the useful parts sit at different depths depending on
- * whether the request got a response at all.
+ * Preserve the structured parts of Discord's heartbeat failure before the existing watchdog/log
+ * path flattens them into prose. The prose remains for humans; companion consumers never parse it.
  */
-function describeHeartbeatError(payload: any): string {
+function heartbeatErrorDetails(payload: any): HeartbeatErrorDetails {
     const e = payload?.error ?? payload;
     const parts: string[] = [];
-    const status = e?.status ?? e?.httpStatus;
-    if (status) parts.push(`HTTP ${status}`);
-    const code = e?.body?.code ?? e?.code;
-    if (code != null && code !== status) parts.push(`code ${code}`);
+    const rawStatus = e?.status ?? e?.httpStatus;
+    const status = Number.isFinite(rawStatus) ? Number(rawStatus) : null;
+    if (status != null) parts.push(`HTTP ${status}`);
+    const rawCode = e?.body?.code ?? e?.code;
+    const upstreamCode = typeof rawCode === "string" || typeof rawCode === "number" ? rawCode : null;
+    if (upstreamCode != null && upstreamCode !== status) parts.push(`code ${upstreamCode}`);
     const message = e?.body?.message ?? e?.message;
     if (message) parts.push(String(message));
     if (!parts.length) {
         try { parts.push(JSON.stringify(e).slice(0, 160)); } catch { parts.push(String(e)); }
     }
-    return parts.join(", ") || "no detail";
+    return {
+        text: parts.join(", ") || "no detail",
+        status,
+        upstreamCode,
+        retryable: status == null || status === 408 || status === 429 || status >= 500,
+    };
 }
+
+function errorFailure(
+    error: any,
+    options: { terminal: boolean; retryable: boolean; attempt?: number | null; maxAttempts?: number | null; reason?: string | null; },
+): CompanionEventFailure {
+    const rawStatus = error?.status ?? error?.statusCode ?? error?.httpStatus;
+    const rawCode = error?.body?.code ?? error?.code;
+    const message = options.reason ?? error?.body?.message ?? error?.message ?? null;
+    return companionFailure({
+        terminal: options.terminal,
+        retryable: options.retryable,
+        attempt: options.attempt,
+        maxAttempts: options.maxAttempts,
+        httpStatus: Number.isFinite(rawStatus) ? Number(rawStatus) : null,
+        upstreamCode: typeof rawCode === "string" || typeof rawCode === "number" ? rawCode : null,
+        reason: message == null ? null : String(message),
+    });
+}
+
 const MAX_TIME = 25 * 60 * 1000;
 const HEARTBEAT_GRACE = 90 * 1000;
 const MAX_TASK_FAILURES = 5;
@@ -63,6 +101,15 @@ const BLACKLISTED_QUEST_ID = "1412491570820812933";
 export interface BypassResult {
     ok: boolean;
     reason: string | null;
+    failure?: CompanionEventFailure;
+    disabled?: boolean;
+}
+
+interface AchievementFallbackEvent {
+    level: "info" | "warning";
+    message: string;
+    reason?: string;
+    failure?: CompanionEventFailure;
 }
 
 export interface TaskCallbacks {
@@ -157,6 +204,18 @@ export class TaskRunner {
         });
     }
 
+    private emitTaskStarted(q: Quest, t: TaskInfo, type: TaskType): void {
+        emitCompanionEvent({
+            code: COMPANION_EVENT_CODES.TASK_STARTED,
+            category: "task",
+            level: "info",
+            message: `Started ${type} task for "${t.name}".`,
+            questId: q.id,
+            questName: t.name,
+            taskType: type,
+        });
+    }
+
     appIdFor(cfg: any, keyName: string, legacyAppId?: string): string | null {
         return taskForKey(cfg, keyName)?.applications?.[0]?.id ?? legacyAppId ?? null;
     }
@@ -238,9 +297,20 @@ export class TaskRunner {
         });
     }
 
-    failTask(q: Quest, t: TaskInfo, reason: string): void {
+    failTask(q: Quest, t: TaskInfo, reason: string, failure?: CompanionEventFailure): void {
         if (!this.isTaskActive(t)) return;
         this.cb.onProgress(q.id, { name: t.name, type: t.type, cur: 0, max: t.target, status: "FAILED", reason });
+        emitCompanionEvent({
+            code: COMPANION_EVENT_CODES.TASK_FAILED,
+            category: "task",
+            level: "error",
+            message: `Task failed for "${t.name}".`,
+            questId: q.id,
+            questName: t.name,
+            taskType: t.type,
+            reason,
+            ...(failure ? { failure } : {}),
+        });
         logger.error(`[Task] Aborted "${t.name}": ${reason}`);
         this.skipped.add(q.id);
         // activeQuests reads the skipped set and nothing else, so a quest that died here leaves
@@ -255,6 +325,8 @@ export class TaskRunner {
         let cur = this.readProgress(s, t.keyName);
         let failCount = 0;
         this.cb.onProgress(q.id, { name: t.name, type: "WATCH_VIDEO", cur, max: t.target, status: "RUNNING" });
+        if (!this.isTaskActive(t)) return;
+        this.emitTaskStarted(q, t, "WATCH_VIDEO");
         const startTime = Date.now();
 
         while (cur < t.target && this.isTaskActive(t)) {
@@ -277,9 +349,21 @@ export class TaskRunner {
                 failCount++;
                 if (e?.status && [400, 403, 404, 409, 410].includes(e.status)) {
                     logger.warn(`[Task] Video quest unavailable (HTTP ${e.status}). Skipping.`);
-                    return this.failTask(q, t, `Client Error ${e.status}`);
+                    return this.failTask(q, t, `Client Error ${e.status}`, errorFailure(e, {
+                        terminal: true,
+                        retryable: false,
+                        reason: `Client Error ${e.status}`,
+                    }));
                 }
-                if (failCount >= MAX_TASK_FAILURES) return this.failTask(q, t, "Too many network failures");
+                if (failCount >= MAX_TASK_FAILURES) {
+                    return this.failTask(q, t, "Too many network failures", errorFailure(e, {
+                        terminal: true,
+                        retryable: true,
+                        attempt: failCount,
+                        maxAttempts: MAX_TASK_FAILURES,
+                        reason: "Too many network failures",
+                    }));
+                }
             }
 
             if (!this.isTaskActive(t)) return;
@@ -326,6 +410,8 @@ export class TaskRunner {
             let subscribed = false;
             // Created below, after the spoof is installed, but cleanup can run before that.
             let watchdog: HeartbeatWatchdog | null = null;
+            let heartbeatConsecutiveFailures = 0;
+            let lastHeartbeatFailure: HeartbeatErrorDetails | null = null;
 
             const finish = () => {
                 if (cleaned) return;
@@ -369,6 +455,15 @@ export class TaskRunner {
 
             const seeded = this.readProgress(q.userStatus, key);
             this.cb.onProgress(q.id, { name: t.name, type, cur: seeded, max: t.target, status: "RUNNING" });
+            // Dashboard listeners are synchronous. A listener can pause/stop this exact generation
+            // from the progress publication above, which runs its cleanup before control returns.
+            // Never let that dead continuation recreate a watchdog/subscription or publish started.
+            if (!this.isTaskActive(t)) {
+                finish();
+                resolve();
+                return;
+            }
+            this.emitTaskStarted(q, t, type);
             logger.info(`[Task] Started ${type}: ${gameData.name}`);
 
             safetyTimer = setTimeout(() => {
@@ -386,8 +481,29 @@ export class TaskRunner {
                 onFailureNoted: message => debug(logger, message),
                 onGiveUp: verdict => {
                     if (cleaned || !this.isTaskActive(t)) return;
+                    const latest = lastHeartbeatFailure;
+                    const failure = companionFailure({
+                        terminal: true,
+                        retryable: latest?.retryable ?? false,
+                        attempt: heartbeatConsecutiveFailures || null,
+                        maxAttempts: latest ? MAX_TASK_FAILURES : null,
+                        httpStatus: latest?.status,
+                        upstreamCode: latest?.upstreamCode,
+                        reason: verdict.reason,
+                    });
+                    emitCompanionEvent({
+                        code: COMPANION_EVENT_CODES.HEARTBEAT_GIVE_UP,
+                        category: "network",
+                        level: "error",
+                        message: `Heartbeat reporting stopped for "${t.name}"; the task is giving up.`,
+                        questId: q.id,
+                        questName: t.name,
+                        taskType: type,
+                        reason: verdict.reason,
+                        failure,
+                    });
                     logger.error(verdict.message);
-                    this.failTask(q, t, verdict.reason);
+                    this.failTask(q, t, verdict.reason, failure);
                     finish();
                     resolve();
                 },
@@ -397,6 +513,8 @@ export class TaskRunner {
             const check = (d: any) => {
                 if (!this.isTaskActive(t)) { finish(); resolve(); return; }
                 if (d?.questId !== q.id) return;
+                heartbeatConsecutiveFailures = 0;
+                lastHeartbeatFailure = null;
                 watchdog?.beat();
                 const prog = this.readProgress(d.userStatus, key);
                 this.cb.onProgress(q.id, { name: t.name, type, cur: prog, max: t.target, status: "RUNNING" });
@@ -413,7 +531,29 @@ export class TaskRunner {
             const onFail = (d: any) => {
                 if (!this.isTaskActive(t)) { finish(); resolve(); return; }
                 if (d?.questId !== q.id) return;
-                watchdog?.fail(describeHeartbeatError(d));
+                const details = heartbeatErrorDetails(d);
+                heartbeatConsecutiveFailures++;
+                lastHeartbeatFailure = details;
+                watchdog?.fail(details.text);
+                if (heartbeatConsecutiveFailures >= MAX_TASK_FAILURES || cleaned || !this.isTaskActive(t)) return;
+                emitCompanionEvent({
+                    code: COMPANION_EVENT_CODES.HEARTBEAT_FAILURE,
+                    category: "network",
+                    level: "warning",
+                    message: `Discord heartbeat attempt failed for "${t.name}"; Orion is still waiting for the next heartbeat.`,
+                    questId: q.id,
+                    questName: t.name,
+                    taskType: type,
+                    failure: companionFailure({
+                        terminal: false,
+                        retryable: details.retryable,
+                        attempt: heartbeatConsecutiveFailures,
+                        maxAttempts: MAX_TASK_FAILURES,
+                        httpStatus: details.status,
+                        upstreamCode: details.upstreamCode,
+                        reason: details.text,
+                    }),
+                });
             };
 
             try {
@@ -440,6 +580,8 @@ export class TaskRunner {
         let failCount = 0;
         let stalledBeats = 0;
         this.cb.onProgress(q.id, { name: t.name, type: "ACTIVITY", cur, max: t.target, status: "RUNNING" });
+        if (!this.isTaskActive(t)) return;
+        this.emitTaskStarted(q, t, "ACTIVITY");
         const startTime = Date.now();
 
         while (cur < t.target && this.isTaskActive(t)) {
@@ -464,9 +606,21 @@ export class TaskRunner {
                 failCount++;
                 if (e?.status && [400, 403, 404, 409, 410].includes(e.status)) {
                     logger.warn(`[Task] Activity quest unavailable (HTTP ${e.status}). Skipping.`);
-                    return this.failTask(q, t, `Client Error ${e.status}`);
+                    return this.failTask(q, t, `Client Error ${e.status}`, errorFailure(e, {
+                        terminal: true,
+                        retryable: false,
+                        reason: `Client Error ${e.status}`,
+                    }));
                 }
-                if (failCount >= MAX_TASK_FAILURES) return this.failTask(q, t, "Too many network failures");
+                if (failCount >= MAX_TASK_FAILURES) {
+                    return this.failTask(q, t, "Too many network failures", errorFailure(e, {
+                        terminal: true,
+                        retryable: true,
+                        attempt: failCount,
+                        maxAttempts: MAX_TASK_FAILURES,
+                        reason: "Too many network failures",
+                    }));
+                }
             }
             if (!this.isTaskActive(t)) return;
             if (Date.now() - startTime > MAX_TIME) return this.failTask(q, t, "Timeout exceeded");
@@ -476,24 +630,67 @@ export class TaskRunner {
         if (this.isTaskActive(t) && cur >= t.target) await this.cb.onComplete(q, t);
     }
 
-    async bypassAchievement(q: Quest, t: TaskInfo): Promise<BypassResult> {
+    async bypassAchievement(q: Quest, t: TaskInfo, fallback?: AchievementFallbackEvent): Promise<BypassResult> {
         let reason: string | null = null;
         if (!this.isTaskActive(t)) return { ok: false, reason };
+
+        // A fallback event means Orion is actually taking the OAuth branch. Checking consent here,
+        // before publishing it or validating bypass-only metadata, prevents companions from being
+        // told that a fallback will run when the user explicitly disabled that path.
+        if (!settings.store.achievementBypass) {
+            reason = "Achievement bypass is off in settings";
+            logger.info(`[Bypass] Achievement OAuth bypass is off in settings; skipping "${t.name}". Enable it in OrionQuests settings if you want it.`);
+            return { ok: false, reason, disabled: true };
+        }
+
+        if (fallback) {
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.ACHIEVEMENT_FALLBACK,
+                category: "achievement",
+                level: fallback.level,
+                message: fallback.message,
+                questId: q.id,
+                questName: t.name,
+                taskType: t.type,
+                ...(fallback.reason ? { reason: fallback.reason } : {}),
+                ...(fallback.failure ? { failure: fallback.failure } : {}),
+            });
+        }
 
         const accountId = this.stores.UserStore?.getCurrentUser?.()?.id ?? null;
         const appId = String(t.appId || q.config?.application?.id || "");
         if (!appId) {
             reason = "this quest carries no application id, so there is nothing to authorize against";
-            return { ok: false, reason };
-        }
-        if (!settings.store.achievementBypass) {
-            logger.info(`[Bypass] Achievement OAuth bypass is off in settings; skipping "${t.name}". Enable it in OrionQuests settings if you want it.`);
-            return { ok: false, reason };
+            const failure = companionFailure({ terminal: true, retryable: false, reason });
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.BYPASS_FAILED,
+                category: "bypass",
+                level: "warning",
+                message: `Discord Says bypass could not start for "${t.name}".`,
+                questId: q.id,
+                questName: t.name,
+                taskType: t.type,
+                reason,
+                failure,
+            });
+            return { ok: false, reason, failure };
         }
         if (!/^\d+$/.test(appId)) {
             reason = `the quest's application id ("${appId}") is not numeric, so it was refused before any request went out`;
+            const failure = companionFailure({ terminal: true, retryable: false, reason });
             logger.warn(`[Bypass] Refusing non-numeric appId "${appId}".`);
-            return { ok: false, reason };
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.BYPASS_FAILED,
+                category: "bypass",
+                level: "warning",
+                message: `Discord Says bypass refused invalid application metadata for "${t.name}".`,
+                questId: q.id,
+                questName: t.name,
+                taskType: t.type,
+                reason,
+                failure,
+            });
+            return { ok: false, reason, failure };
         }
 
         let preGrantIds: Set<string> | undefined;
@@ -505,13 +702,35 @@ export class TaskRunner {
                 .map((tk: any) => tk.id));
         } catch (e: any) {
             if (!this.isTaskActive(t)) return { ok: false, reason };
+            reason = "Orion could not snapshot existing OAuth grants, so the bypass was aborted before authorization";
+            const failure = errorFailure(e, { terminal: true, retryable: false, reason });
             logger.warn(`[Bypass] Couldn't snapshot existing grants; aborting so we never leave an un-revocable authorization: ${e?.message}`);
-            return { ok: false, reason };
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.BYPASS_FAILED,
+                category: "bypass",
+                level: "warning",
+                message: `Discord Says bypass stopped before authorization for "${t.name}".`,
+                questId: q.id,
+                questName: t.name,
+                taskType: t.type,
+                reason,
+                failure,
+            });
+            return { ok: false, reason, failure };
         }
 
         try {
             if (!this.isTaskActive(t)) return { ok: false, reason };
             logger.info(`[Bypass] Trying Discord Says auth flow for "${t.name}"...`);
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.BYPASS_STARTED,
+                category: "bypass",
+                level: "info",
+                message: `Discord Says bypass started for "${t.name}".`,
+                questId: q.id,
+                questName: t.name,
+                taskType: t.type,
+            });
 
             const authRes: any = await this.stores.API.post({
                 url: "/oauth2/authorize",
@@ -544,7 +763,11 @@ export class TaskRunner {
             if (!this.isTaskActive(t)) return { ok: false, reason };
             const dsAuthRes = await Native.discordsaysAuthorize({ appId, questId: q.id, authCode, referrer });
             if (!this.isTaskActive(t)) return { ok: false, reason };
-            if (!dsAuthRes.ok) throw new Error(`discordsays authorize ${dsAuthRes.status}`);
+            if (!dsAuthRes.ok) {
+                const error: any = new Error(`discordsays authorize ${dsAuthRes.status}`);
+                error.status = dsAuthRes.status;
+                throw error;
+            }
             let dsToken: string | undefined;
             try { dsToken = (JSON.parse(dsAuthRes.body) as { token?: string }).token; }
             catch { throw new Error("discordsays returned non-JSON: " + String(dsAuthRes.body).slice(0, 120)); }
@@ -553,17 +776,42 @@ export class TaskRunner {
             if (!this.isTaskActive(t)) return { ok: false, reason };
             const progRes = await Native.discordsaysProgress({ appId, questId: q.id, token: dsToken, target: t.target, referrer });
             if (!this.isTaskActive(t)) return { ok: false, reason };
-            if (!progRes.ok) throw new Error(`discordsays progress ${progRes.status}`);
+            if (!progRes.ok) {
+                const error: any = new Error(`discordsays progress ${progRes.status}`);
+                error.status = progRes.status;
+                throw error;
+            }
 
             logger.info(`[Bypass] Success. "${t.name}" completed via Discord Says.`);
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.BYPASS_SUCCEEDED,
+                category: "bypass",
+                level: "success",
+                message: `Discord Says bypass completed "${t.name}".`,
+                questId: q.id,
+                questName: t.name,
+                taskType: t.type,
+            });
             return { ok: true, reason: null };
         } catch (e: any) {
             if (!this.isTaskActive(t)) return { ok: false, reason };
-            const code = e?.body?.code;
+            const code = e?.body?.code ?? e?.code;
             if (code === 50165) {
                 reason = "the activity is age-gated or delisted, so Discord refuses the proxy ticket on this account";
+                const failure = errorFailure(e, { terminal: true, retryable: false, reason });
                 logger.warn(`[Bypass] "${t.name}" can't be launched (age-gated or delisted). Discord blocks the proxy ticket, so there is nothing we can do.`);
-                return { ok: false, reason };
+                emitCompanionEvent({
+                    code: COMPANION_EVENT_CODES.BYPASS_FAILED,
+                    category: "bypass",
+                    level: "warning",
+                    message: `Discord Says bypass is unavailable for "${t.name}" on this account.`,
+                    questId: q.id,
+                    questName: t.name,
+                    taskType: t.type,
+                    reason,
+                    failure,
+                });
+                return { ok: false, reason, failure };
             }
             const parts: string[] = [];
             if (e?.status) parts.push(`HTTP ${e.status}`);
@@ -573,8 +821,24 @@ export class TaskRunner {
             else if (typeof e === "string") parts.push(e);
             else if (e) { try { parts.push(JSON.stringify(e).slice(0, 200)); } catch { parts.push(String(e)); } }
             reason = `the Discord Says bypass failed (${parts.join(", ") || "unknown error"})`;
+            const failure = errorFailure(e, {
+                terminal: true,
+                retryable: e?.status === 408 || e?.status === 429 || e?.status >= 500,
+                reason,
+            });
             logger.warn(`[Bypass] Failed: ${parts.join(", ") || "unknown"}`);
-            return { ok: false, reason };
+            emitCompanionEvent({
+                code: COMPANION_EVENT_CODES.BYPASS_FAILED,
+                category: "bypass",
+                level: "warning",
+                message: `Discord Says bypass failed for "${t.name}".`,
+                questId: q.id,
+                questName: t.name,
+                taskType: t.type,
+                reason,
+                failure,
+            });
+            return { ok: false, reason, failure };
         } finally {
             // Compensating cleanup is intentionally allowed after task cancellation because a
             // request already on the wire may have created a grant. Account identity is checked
@@ -610,7 +874,10 @@ export class TaskRunner {
 
         let cur = this.readProgress(q.userStatus, t.keyName);
         this.cb.onProgress(q.id, { name: t.name, type: "ACHIEVEMENT", cur, max: t.target, status: "RUNNING" });
+        if (!this.isTaskActive(t)) return;
+        this.emitTaskStarted(q, t, "ACHIEVEMENT");
 
+        let fallback: AchievementFallbackEvent | undefined;
         const key = this.streamKey();
         if (key) {
             const beat = { stream_key: key, application_id: String(t.appId || ""), terminal: false };
@@ -636,11 +903,33 @@ export class TaskRunner {
                     if (!this.isTaskActive(t)) return;
                     failCount++;
                     if (e?.status && [400, 403, 404, 409, 410].includes(e.status)) {
-                        logger.warn(`[Achievement] Heartbeat rejected (HTTP ${e.status}). Falling back to bypass.`);
+                        logger.warn(`[Achievement] Heartbeat rejected (HTTP ${e.status}).`);
+                        fallback = {
+                            level: "warning",
+                            message: `Achievement heartbeat was rejected for "${t.name}"; Orion will try the Discord Says bypass.`,
+                            failure: errorFailure(e, {
+                                terminal: false,
+                                retryable: false,
+                                attempt: failCount,
+                                maxAttempts: failCount,
+                                reason: `Heartbeat rejected (HTTP ${e.status})`,
+                            }),
+                        };
                         break;
                     }
                     if (failCount >= MAX_TASK_FAILURES) {
-                        logger.warn(`[Achievement] Too many failures. Falling back to bypass.`);
+                        logger.warn("[Achievement] Too many heartbeat failures.");
+                        fallback = {
+                            level: "warning",
+                            message: `Achievement heartbeat retries were exhausted for "${t.name}"; Orion will try the Discord Says bypass.`,
+                            failure: errorFailure(e, {
+                                terminal: false,
+                                retryable: true,
+                                attempt: failCount,
+                                maxAttempts: MAX_TASK_FAILURES,
+                                reason: "Achievement heartbeat attempts exhausted",
+                            }),
+                        };
                         break;
                     }
                 }
@@ -648,20 +937,26 @@ export class TaskRunner {
             }
 
             if (cur >= t.target && this.isTaskActive(t)) return this.cb.onComplete(q, t);
+        } else {
+            fallback = {
+                level: "info",
+                message: `No voice-channel stream key was available for "${t.name}"; Orion will try the Discord Says bypass.`,
+                reason: "No voice channel stream key available for the heartbeat path",
+            };
         }
 
         if (!this.isTaskActive(t)) return;
-        const bypass = await this.bypassAchievement(q, t);
+        const bypass = await this.bypassAchievement(q, t, fallback);
         if (!this.isTaskActive(t)) return;
         if (bypass.ok) return this.cb.onComplete(q, t);
 
-        if (!settings.store.achievementBypass) {
+        if (bypass.disabled) {
             this.consentSkipped.add(q.id);
-            return this.failTask(q, t, "Achievement bypass is off in settings");
+            return this.failTask(q, t, bypass.reason ?? "Achievement bypass is off in settings");
         }
 
         logger.warn(`[Task] Skipping "${t.name}". No auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`);
-        return this.failTask(q, t, bypass.reason ?? "no auto-completion path worked");
+        return this.failTask(q, t, bypass.reason ?? "no auto-completion path worked", bypass.failure);
     }
 
     retryConsentSkipped(): number {
