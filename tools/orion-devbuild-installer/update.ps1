@@ -94,7 +94,21 @@ if (-not $pluginReady) {
     }
 }
 
-$companions = @(Update-CompanionUserplugins -InstallDir $InstallDir)
+$companionDecisionProvider = {
+    param($context)
+
+    Warn "  $($context.Name): upstream changed, but this checkout has local work."
+    Write-Host "    $($context.Summary)"
+    try {
+        $answer = [string](Read-Host '    [K]eep local work and skip this plugin update / [D]iscard it and update (default K)')
+        if (-not [string]::IsNullOrWhiteSpace($answer) -and $answer.Trim().ToLowerInvariant() -in @('d', 'discard')) {
+            return 'discard'
+        }
+    } catch { }
+    return 'keep'
+}
+
+$companions = @(Update-CompanionUserplugins -InstallDir $InstallDir -DecisionProvider $companionDecisionProvider)
 if ($companions.Count -gt 0) {
     Info 'Updating other userplugins in this checkout...'
     foreach ($c in $companions) {
