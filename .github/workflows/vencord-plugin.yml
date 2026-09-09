@@ -92,6 +92,9 @@ jobs:
           grep -q "QUESTS_ENROLL_SUCCESS" dist/renderer.js
           grep -q "getControlSnapshot" dist/renderer.js
           grep -q "subscribeControlState" dist/renderer.js
+          grep -q "subscribeEvents" dist/renderer.js
+          grep -q "getSchedulerSnapshot" dist/renderer.js
+          grep -q "subscribeSchedulerState" dist/renderer.js
           grep -q "controlAll" dist/renderer.js
           grep -q "controlQuest" dist/renderer.js
           grep -q "Unsupported Orion global task action" dist/renderer.js

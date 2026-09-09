@@ -10,6 +10,7 @@
 import { ApplicationCommandInputType, ApplicationCommandOptionType, sendBotMessage } from "@api/Commands";
 import definePlugin from "@utils/types";
 
+import { subscribeCompanionEvents, type CompanionEventListener } from "./companionEvents";
 import { setWatchForEnrollmentsHook } from "./hooks";
 import {
     getCurrentUserId,
@@ -20,15 +21,18 @@ import {
     pauseAllQuests,
     pauseQuest,
     readDashboard,
+    readSchedulerSnapshot,
     resetForAccountChange,
     resumeAllQuests,
     resumeQuest,
     startOrion,
     stopOrion,
     subscribeDashboard,
+    subscribeSchedulerState as subscribeOrionSchedulerState,
 } from "./orion";
 import { repairSuppressedPresence } from "./patcher";
 import { resolveQuestTarget } from "./questTarget";
+import type { SchedulerSnapshot } from "./schedulerMetadata";
 import { settings } from "./settings";
 
 /**
@@ -450,6 +454,22 @@ export default definePlugin({
 
     subscribeControlState(listener: () => void): () => void {
         return subscribeDashboard(listener);
+    },
+
+    // Additive read-only diagnostics capability. Older companions keep using the existing
+    // control surface and console fallback; consumers feature-detect this method independently.
+    subscribeEvents(listener: CompanionEventListener): () => void {
+        return subscribeCompanionEvents(listener);
+    },
+
+    // Scheduler facts are kept separate from dashboard/control state: a control-free QUEUE row
+    // can mean "eligible next cycle", while this surface reports only the live scheduler batch.
+    getSchedulerSnapshot(): SchedulerSnapshot {
+        return readSchedulerSnapshot();
+    },
+
+    subscribeSchedulerState(listener: () => void): () => void {
+        return subscribeOrionSchedulerState(listener);
     },
 
     async controlEngine(action: "start" | "stop"): Promise<string> {

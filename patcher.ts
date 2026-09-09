@@ -23,6 +23,7 @@ import * as DataStore from "@api/DataStore";
 import { getUserSettingLazy } from "@api/UserSettings";
 import { Logger } from "@utils/Logger";
 
+import { COMPANION_EVENT_CODES, emitCompanionEvent } from "./companionEvents";
 import type { FakeGame, Stores } from "./types";
 import { debug } from "./util";
 
@@ -59,8 +60,22 @@ export async function repairSuppressedPresence(): Promise<void> {
         await ShowCurrentGame.updateSetting(true);
         await DataStore.del(SUPPRESSION_KEY);
         logger.info("[Patcher] Previous session ended without restoring your Game Activity setting. Turned it back on.");
+        emitCompanionEvent({
+            code: COMPANION_EVENT_CODES.PATCHER_PRESENCE_RESTORED,
+            category: "patcher",
+            level: "info",
+            message: "Orion restored Discord's Game Activity setting after an unclean previous session.",
+        });
     } catch (e: any) {
-        logger.warn(`[Patcher] Could not restore showCurrentGame from a previous session: ${e?.message}`);
+        const reason = String(e?.message ?? e ?? "unknown error");
+        logger.warn(`[Patcher] Could not restore showCurrentGame from a previous session: ${reason}`);
+        emitCompanionEvent({
+            code: COMPANION_EVENT_CODES.PATCHER_PRESENCE_RESTORE_FAILED,
+            category: "patcher",
+            level: "warning",
+            message: "Orion could not restore Discord's Game Activity setting from the previous session.",
+            reason,
+        });
     }
 }
 

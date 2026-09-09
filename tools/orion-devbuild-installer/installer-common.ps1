@@ -374,21 +374,96 @@ function Start-DiscordFlavors {
     return @($failed | Select-Object -Unique)
 }
 
+function Get-GitCheckoutFingerprint {
+    <#
+      Content-aware snapshot for a destructive companion decision.
+
+      `git status --short` is intentionally not enough: editing the same already-dirty file keeps
+      exactly the same status line, and changing an existing untracked file keeps the same path.
+      Capture the index plus the bytes of every tracked and non-ignored untracked file instead.
+      Ignored files are excluded because `git clean -fd` deliberately preserves them.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $indexState = (& git -C $Path ls-files --stage -z 2>$null) -join ''
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $trackedRaw = (& git -C $Path ls-files -z 2>$null) -join ''
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $untrackedRaw = (& git -C $Path ls-files --others --exclude-standard -z 2>$null) -join ''
+        if ($LASTEXITCODE -ne 0) { return $null }
+
+        $trackedPaths = @($trackedRaw -split [char]0 | Where-Object { $_.Length -gt 0 })
+        $untrackedPaths = @($untrackedRaw -split [char]0 | Where-Object { $_.Length -gt 0 })
+        $rows = New-Object System.Collections.Generic.List[string]
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+
+        foreach ($kindAndPath in @(
+            @($trackedPaths | ForEach-Object { [pscustomobject]@{ Kind = 'T'; Relative = [string]$_ } }),
+            @($untrackedPaths | ForEach-Object { [pscustomobject]@{ Kind = 'U'; Relative = [string]$_ } })
+        )) {
+            foreach ($entry in @($kindAndPath)) {
+                $relative = [string]$entry.Relative
+                $pathToken = [Convert]::ToBase64String($utf8.GetBytes($relative))
+                $full = Join-Path $Path $relative
+                if (Test-Path -LiteralPath $full -PathType Leaf) {
+                    try {
+                        $hash = (Get-FileHash -LiteralPath $full -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+                        $rows.Add("$($entry.Kind):$pathToken:F:$hash")
+                    } catch {
+                        return $null
+                    }
+                } elseif (Test-Path -LiteralPath $full -PathType Container) {
+                    # Gitlinks/submodules are directories in the parent worktree. The index state
+                    # above carries their gitlink SHA; the marker keeps path/type changes visible.
+                    $rows.Add("$($entry.Kind):$pathToken:D")
+                } else {
+                    $rows.Add("$($entry.Kind):$pathToken:MISSING")
+                }
+            }
+        }
+
+        $orderedRows = @($rows | Sort-Object)
+        $indexToken = [Convert]::ToBase64String($utf8.GetBytes($indexState))
+        $payload = "index=$indexToken`n" + ($orderedRows -join "`n")
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $sha.ComputeHash($utf8.GetBytes($payload))
+            return ([BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $sha.Dispose()
+        }
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 function Update-CompanionUserplugins {
     <#
-      Fast-forward every other git-checked-out userplugin sitting beside orionQuests.
+      Update every other git-checked-out userplugin sitting beside orionQuests.
 
-      People run companion plugins in this checkout, QuestUI being the one this came from, and
-      updating one meant knowing the git command and running it by hand. UPDATE.cmd already
-      rebuilds the whole tree, so the plugins it compiles in may as well be current.
+      A normal behind checkout still fast-forwards. The extra case handled here is a companion
+      whose upstream rewrote history after the user cloned it. Auto-recovery is deliberately
+      narrow: the checkout must have been clean with HEAD exactly equal to its pre-fetch upstream,
+      and that same proof is revalidated immediately before reset --hard. Local edits, untracked
+      files, staged changes, or local commits are never reset automatically.
 
-      --ff-only on purpose, never a reset. This touches somebody else's repository, so a plugin
-      with local edits or a diverged branch is reported and left exactly as it was rather than
-      quietly discarded. A pull that fails is not fatal either: the build still runs with the
-      checkout that is already on disk, and the transactional build is what decides whether the
-      result ships.
+      A local-ahead checkout that already contains the fetched upstream is already current, even
+      when its worktree is dirty, so it is left alone without asking a destructive question.
+
+      Interactive callers may supply DecisionProvider. It receives one context object and returns
+      "keep" or "discard". With no provider the safe default is keep. Before honoring Discard, the
+      checkout HEAD, upstream ref and a content-aware local-work fingerprint are revalidated so
+      consent for one snapshot cannot discard bytes that changed while the decision was pending.
+      Discard resets tracked state and removes non-ignored untracked files; ignored files are never
+      cleaned.
     #>
-    param([Parameter(Mandatory)][string]$InstallDir)
+    param(
+        [Parameter(Mandatory)][string]$InstallDir,
+        [scriptblock]$DecisionProvider
+    )
 
     $root = Join-Path $InstallDir 'src\userplugins'
     $results = @()
@@ -402,20 +477,273 @@ function Update-CompanionUserplugins {
             continue
         }
 
-        $before = (& git -C $dir.FullName rev-parse HEAD 2>$null)
+        $before = ((& git -C $dir.FullName rev-parse HEAD 2>$null) -join '').Trim()
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($before)) {
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = 'could not read checkout HEAD' }
+            continue
+        }
+
+        $upstreamRef = ((& git -C $dir.FullName rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null) -join '').Trim()
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($upstreamRef)) {
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = 'current branch has no tracked upstream' }
+            continue
+        }
+
+        $beforeUpstream = ((& git -C $dir.FullName rev-parse '@{u}' 2>$null) -join '').Trim()
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($beforeUpstream)) {
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = "could not resolve tracked upstream $upstreamRef" }
+            continue
+        }
+
+        $changesBeforeFetch = @(& git -C $dir.FullName status --short --untracked-files=all 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($LASTEXITCODE -ne 0) {
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = 'could not inspect local changes' }
+            continue
+        }
+
         $prev = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        $output = (& git -C $dir.FullName pull --ff-only 2>&1) -join ' '
-        $code = $LASTEXITCODE
+        $fetchOutput = (& git -C $dir.FullName fetch --quiet 2>&1) -join ' '
+        $fetchCode = $LASTEXITCODE
         $ErrorActionPreference = $prev
-        $after = (& git -C $dir.FullName rev-parse HEAD 2>$null)
+        if ($fetchCode -ne 0) {
+            $detail = $fetchOutput.Trim()
+            if ([string]::IsNullOrWhiteSpace($detail)) { $detail = 'git fetch failed' }
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = $detail }
+            continue
+        }
 
-        if ($code -ne 0) {
-            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = $output.Trim() }
-        } elseif ($before -ne $after) {
-            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'updated'; Detail = "$($before.Substring(0, 7)) -> $($after.Substring(0, 7))" }
-        } else {
-            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'current'; Detail = $after.Substring(0, 7) }
+        $afterUpstream = ((& git -C $dir.FullName rev-parse '@{u}' 2>$null) -join '').Trim()
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($afterUpstream)) {
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = "tracked upstream $upstreamRef disappeared after fetch" }
+            continue
+        }
+
+        # Everything destructive below reasons from a fresh post-fetch snapshot, not the status
+        # captured before a potentially slow network operation.
+        $currentHead = ((& git -C $dir.FullName rev-parse HEAD 2>$null) -join '').Trim()
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($currentHead)) {
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = 'could not re-read checkout HEAD after fetch' }
+            continue
+        }
+        $changes = @(& git -C $dir.FullName status --short --untracked-files=all 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($LASTEXITCODE -ne 0) {
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = 'could not re-read local changes after fetch' }
+            continue
+        }
+
+        $shortCurrent = if ($currentHead.Length -gt 7) { $currentHead.Substring(0, 7) } else { $currentHead }
+        $shortAfter = if ($afterUpstream.Length -gt 7) { $afterUpstream.Substring(0, 7) } else { $afterUpstream }
+
+        # If fetched upstream is already an ancestor of local HEAD, no update is pending. This is
+        # the important local-ahead case: dirty work must not be offered a pointless Discard path.
+        & git -C $dir.FullName merge-base --is-ancestor $afterUpstream $currentHead 2>$null
+        $ancestorCode = $LASTEXITCODE
+        if ($ancestorCode -gt 1) {
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = 'could not compare checkout history with its fetched upstream' }
+            continue
+        }
+        if ($ancestorCode -eq 0) {
+            $detail = $shortCurrent
+            if ($currentHead -ne $afterUpstream) { $detail += ' (local commits kept; tracked upstream already contained)' }
+            if ($changes.Count -gt 0) { $detail += ' (local changes kept)' }
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'current'; Detail = $detail }
+            continue
+        }
+
+        if ($changes.Count -eq 0) {
+            # Try the ordinary non-destructive path first. A checkout merely behind the tracked
+            # upstream lands here and fast-forwards without any special recovery logic.
+            $prev = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            $mergeOutput = (& git -C $dir.FullName merge --ff-only --quiet $afterUpstream 2>&1) -join ' '
+            $mergeCode = $LASTEXITCODE
+            $ErrorActionPreference = $prev
+
+            if ($mergeCode -eq 0) {
+                $mergeHead = ((& git -C $dir.FullName rev-parse HEAD 2>$null) -join '').Trim()
+                if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($mergeHead)) {
+                    $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = 'fast-forward completed but the resulting HEAD could not be read' }
+                } elseif ($mergeHead -eq $afterUpstream) {
+                    $results += [pscustomobject]@{ Name = $dir.Name; Status = 'updated'; Detail = "$shortCurrent -> $shortAfter" }
+                } else {
+                    $shortMergeHead = if ($mergeHead.Length -gt 7) { $mergeHead.Substring(0, 7) } else { $mergeHead }
+                    $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = "fast-forward ended at unexpected HEAD $shortMergeHead" }
+                }
+                continue
+            }
+
+            # A remote rewrite is the one case where automatic reset is allowed. Revalidate the
+            # complete proof after the failed merge and immediately before reset so work created
+            # during fetch/merge cannot be destroyed by a stale clean snapshot.
+            if ($before -eq $beforeUpstream -and $changesBeforeFetch.Count -eq 0 -and $afterUpstream -ne $beforeUpstream) {
+                $preResetHead = ((& git -C $dir.FullName rev-parse HEAD 2>$null) -join '').Trim()
+                $headOk = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($preResetHead)
+                $preResetChanges = @(& git -C $dir.FullName status --short --untracked-files=all 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $statusOk = $LASTEXITCODE -eq 0
+                $preResetUpstream = ((& git -C $dir.FullName rev-parse '@{u}' 2>$null) -join '').Trim()
+                $upstreamOk = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($preResetUpstream)
+
+                if ($headOk -and $statusOk -and $upstreamOk -and
+                    $preResetHead -eq $before -and $preResetChanges.Count -eq 0 -and $preResetUpstream -eq $afterUpstream) {
+                    $prev = $ErrorActionPreference
+                    $ErrorActionPreference = 'Continue'
+                    $resetOutput = (& git -C $dir.FullName reset --hard --quiet $afterUpstream 2>&1) -join ' '
+                    $resetCode = $LASTEXITCODE
+                    $ErrorActionPreference = $prev
+                    $resetHead = ((& git -C $dir.FullName rev-parse HEAD 2>$null) -join '').Trim()
+
+                    if ($resetCode -eq 0 -and $resetHead -eq $afterUpstream) {
+                        $results += [pscustomobject]@{
+                            Name = $dir.Name
+                            Status = 'updated'
+                            Detail = "$shortCurrent -> $shortAfter (upstream history was rewritten; clean checkout recovered)"
+                        }
+                    } else {
+                        $detail = $resetOutput.Trim()
+                        if ([string]::IsNullOrWhiteSpace($detail)) { $detail = 'could not reset clean checkout to rewritten upstream' }
+                        $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = $detail }
+                    }
+                    continue
+                }
+            }
+        }
+
+        # The checkout cannot be updated non-destructively. Refresh once more after the merge
+        # attempt/rewrite proof so the summary and any decision describe the state that exists now.
+        $currentHead = ((& git -C $dir.FullName rev-parse HEAD 2>$null) -join '').Trim()
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($currentHead)) {
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = 'could not read checkout HEAD before local-work decision' }
+            continue
+        }
+        $changes = @(& git -C $dir.FullName status --short --untracked-files=all 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($LASTEXITCODE -ne 0) {
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = 'could not inspect local changes before local-work decision' }
+            continue
+        }
+
+        # A concurrent/manual update may have made the checkout current while we were trying the
+        # safe paths above. Never prompt if the fetched upstream is already contained now.
+        & git -C $dir.FullName merge-base --is-ancestor $afterUpstream $currentHead 2>$null
+        $ancestorCode = $LASTEXITCODE
+        if ($ancestorCode -gt 1) {
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = 'could not compare checkout history before local-work decision' }
+            continue
+        }
+        if ($ancestorCode -eq 0) {
+            $shortCurrent = if ($currentHead.Length -gt 7) { $currentHead.Substring(0, 7) } else { $currentHead }
+            $detail = $shortCurrent
+            if ($currentHead -ne $afterUpstream) { $detail += ' (local commits kept; tracked upstream already contained)' }
+            if ($changes.Count -gt 0) { $detail += ' (local changes kept)' }
+            $results += [pscustomobject]@{ Name = $dir.Name; Status = 'current'; Detail = $detail }
+            continue
+        }
+
+        # Summarize local history against the pre-fetch upstream so the remote rewrite itself is
+        # never counted as a pile of local commits.
+        $localCommitCount = 0
+        $countText = ((& git -C $dir.FullName rev-list --count "$beforeUpstream..$currentHead" 2>$null) -join '').Trim()
+        if ($LASTEXITCODE -eq 0) {
+            $parsedCount = 0
+            if ([int]::TryParse($countText, [ref]$parsedCount)) { $localCommitCount = $parsedCount }
+        }
+
+        $summaryParts = @()
+        if ($changes.Count -gt 0) {
+            $shown = @($changes | Select-Object -First 5 | ForEach-Object { ([string]$_).Trim() })
+            $extra = if ($changes.Count -gt $shown.Count) { ", +$($changes.Count - $shown.Count) more" } else { '' }
+            $summaryParts += "changes: $($shown -join ', ')$extra"
+        }
+        if ($localCommitCount -gt 0) { $summaryParts += "$localCommitCount local commit(s)" }
+        if ($summaryParts.Count -eq 0) { $summaryParts += 'history differs from the tracked upstream' }
+        $summary = $summaryParts -join '; '
+
+        $decisionFingerprint = Get-GitCheckoutFingerprint -Path $dir.FullName
+        if ([string]::IsNullOrWhiteSpace($decisionFingerprint)) {
+            $results += [pscustomobject]@{
+                Name = $dir.Name
+                Status = 'failed'
+                Detail = 'local work kept; could not fingerprint the checkout safely before a destructive decision'
+            }
+            continue
+        }
+
+        $context = [pscustomobject]@{
+            Name = $dir.Name
+            Path = $dir.FullName
+            Summary = $summary
+            Changes = [string[]]$changes
+            LocalCommitCount = $localCommitCount
+            HeadBefore = $currentHead
+            UpstreamBefore = $beforeUpstream
+            UpstreamAfter = $afterUpstream
+            UpstreamRef = $upstreamRef
+        }
+
+        $decision = 'keep'
+        if ($DecisionProvider) {
+            try {
+                $provided = [string](& $DecisionProvider $context)
+                if (-not [string]::IsNullOrWhiteSpace($provided)) { $decision = $provided.Trim().ToLowerInvariant() }
+            } catch {
+                $decision = 'keep'
+            }
+        }
+
+        if ($decision -in @('discard', 'd', 'reset')) {
+            # Consent applies only to the exact content snapshot that existed when the caller was
+            # asked. Status letters are insufficient: M stays M when the same file is edited again.
+            $decisionHead = ((& git -C $dir.FullName rev-parse HEAD 2>$null) -join '').Trim()
+            $decisionHeadOk = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($decisionHead)
+            $decisionUpstream = ((& git -C $dir.FullName rev-parse '@{u}' 2>$null) -join '').Trim()
+            $decisionUpstreamOk = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($decisionUpstream)
+            $decisionFingerprintNow = Get-GitCheckoutFingerprint -Path $dir.FullName
+            $decisionFingerprintOk = -not [string]::IsNullOrWhiteSpace($decisionFingerprintNow)
+
+            if (-not ($decisionHeadOk -and $decisionUpstreamOk -and $decisionFingerprintOk) -or
+                $decisionHead -ne $context.HeadBefore -or $decisionUpstream -ne $context.UpstreamAfter -or
+                $decisionFingerprintNow -cne $decisionFingerprint) {
+                $results += [pscustomobject]@{
+                    Name = $dir.Name
+                    Status = 'failed'
+                    Detail = 'local work kept; checkout changed while the discard decision was pending, so nothing was reset'
+                }
+                continue
+            }
+
+            $prev = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            $resetOutput = (& git -C $dir.FullName reset --hard --quiet $afterUpstream 2>&1) -join ' '
+            $resetCode = $LASTEXITCODE
+            $cleanOutput = ''
+            $cleanCode = 1
+            if ($resetCode -eq 0) {
+                $cleanOutput = (& git -C $dir.FullName clean -fd --quiet 2>&1) -join ' '
+                $cleanCode = $LASTEXITCODE
+            }
+            $ErrorActionPreference = $prev
+
+            $resetHead = ((& git -C $dir.FullName rev-parse HEAD 2>$null) -join '').Trim()
+            $remaining = @(& git -C $dir.FullName status --short --untracked-files=all 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            if ($resetCode -eq 0 -and $cleanCode -eq 0 -and $resetHead -eq $afterUpstream -and $remaining.Count -eq 0) {
+                $shortCurrent = if ($currentHead.Length -gt 7) { $currentHead.Substring(0, 7) } else { $currentHead }
+                $results += [pscustomobject]@{
+                    Name = $dir.Name
+                    Status = 'updated'
+                    Detail = "$shortCurrent -> $shortAfter (local work discarded by request)"
+                }
+            } else {
+                $detail = (@($resetOutput.Trim(), $cleanOutput.Trim()) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join ' '
+                if ([string]::IsNullOrWhiteSpace($detail)) { $detail = 'discard was requested but the checkout could not be made clean at the tracked upstream' }
+                $results += [pscustomobject]@{ Name = $dir.Name; Status = 'failed'; Detail = $detail }
+            }
+            continue
+        }
+
+        $results += [pscustomobject]@{
+            Name = $dir.Name
+            Status = 'failed'
+            Detail = "local work kept; update skipped ($summary)"
         }
     }
 
