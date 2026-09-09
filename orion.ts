@@ -216,7 +216,7 @@ function emitDashboard(): void {
     dashboardDispatchDepth++;
     try {
         for (const fn of dashboardListeners) {
-            try { fn(); } catch (e: any) { debug(logger, `[UI] listener threw: ${e?.message}`); }
+            try { fn(); } catch (e: any) { debug(logger, `[System] Dashboard listener threw: ${e?.message}`); }
         }
     } finally {
         dashboardDispatchDepth--;
@@ -503,7 +503,7 @@ async function onTaskComplete(
         if (typeof Notification !== "undefined" && Notification.permission === "granted") {
             new Notification("Orion: Quest Completed", { body: t.name, tag: `orion-${q.id}` });
         }
-    } catch (e: any) { debug(logger, `[Notification] ${e?.message}`); }
+    } catch (e: any) { debug(logger, `[System] Notification: ${e?.message}`); }
 
     if (settings.store.tryToClaimReward) {
         try {
@@ -1135,14 +1135,14 @@ export async function startOrion(): Promise<void> {
             if (!enabled || !isRunActive(runId, runRuntime)) return;
             if (isConfirmedDifferentAccount(getCurrentUserId(), runUserId)) return;
             const restored = runTasks.retryConsentSkipped();
-            if (restored > 0) logger.info(`[Settings] Achievement bypass enabled, retrying ${restored} skipped quest(s) on the next cycle.`);
+            if (restored > 0) logger.info(`[System] Achievement bypass enabled, retrying ${restored} skipped quest(s) on the next cycle.`);
         });
 
         try {
             if (typeof Notification !== "undefined" && Notification.permission === "default") {
                 Notification.requestPermission();
             }
-        } catch (e: any) { debug(logger, `[Notification] permission request failed: ${e?.message}`); }
+        } catch (e: any) { debug(logger, `[System] Notification permission request failed: ${e?.message}`); }
 
         await mainLoop(runId, runRuntime, runStores, runTasks, runTraffic, runUserId);
     } catch (e: any) {
@@ -1160,7 +1160,7 @@ export async function startOrion(): Promise<void> {
             runRuntime.running = false;
             RUNTIME.running = false;
         } else {
-            debug(logger, `[Lifecycle] Stale run ${runId} exited after it had already been replaced: ${e?.message ?? e}`);
+            debug(logger, `[System] Stale run ${runId} exited after it had already been replaced: ${e?.message ?? e}`);
         }
     } finally {
         if (activeRunId === runId && activeRuntime === runRuntime) stopOrion();
@@ -1195,7 +1195,7 @@ export function stopOrion(): void {
     let failed = 0;
     taskControls.cancelAll(error => {
         failed++;
-        logger.error("[Stop] Task cleanup threw:", error);
+        logger.error("[System] Task cleanup threw:", error);
     });
 
     // Task-scoped cleanup lives only in TaskControlRegistry. This set is reserved for genuinely

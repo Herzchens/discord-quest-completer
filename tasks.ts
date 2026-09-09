@@ -271,7 +271,7 @@ export class TaskRunner {
                 id: appId,
             };
         } catch (e: any) {
-            debug(logger, `[FetchGame] Fallback for ${appName}: ${e?.message ?? e}`);
+            debug(logger, `[Task] Game metadata fallback for ${appName}: ${e?.message ?? e}`);
             const cleanName = sanitize(appName);
             const safeExe = `${cleanName.replace(/\s+/g, "")}.exe`;
             return {
@@ -421,9 +421,9 @@ export class TaskRunner {
                 try { cleanupHook(); } catch (e: any) { debug(logger, `[Task] Cleanup: ${e?.message}`); }
                 if (subscribed) {
                     try { this.stores.Dispatcher?.unsubscribe(HEARTBEAT_EVT, check); }
-                    catch (e: any) { debug(logger, `[Dispatcher] Unsubscribe failed: ${e?.message}`); }
+                    catch (e: any) { debug(logger, `[System] Dispatcher unsubscribe failed: ${e?.message}`); }
                     try { this.stores.Dispatcher?.unsubscribe(HEARTBEAT_FAIL_EVT, onFail); }
-                    catch (e: any) { debug(logger, `[Dispatcher] Unsubscribe failed: ${e?.message}`); }
+                    catch (e: any) { debug(logger, `[System] Dispatcher unsubscribe failed: ${e?.message}`); }
                 }
                 this.removeCleanup(t, abort);
             };
@@ -597,7 +597,7 @@ export class TaskRunner {
                     try {
                         await this.enqueue(t, `/quests/${q.id}/heartbeat`, { ...beat, terminal: true });
                     } catch (e: any) {
-                        if (this.isTaskActive(t)) debug(logger, `[ACTIVITY] Final heartbeat failed: ${e?.message}`);
+                        if (this.isTaskActive(t)) debug(logger, `[Task] Final ACTIVITY heartbeat failed: ${e?.message}`);
                     }
                     break;
                 }

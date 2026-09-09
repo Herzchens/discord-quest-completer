@@ -243,6 +243,34 @@ The userscript's `index.js` stays at the root next to `index.tsx`. Both resolver
 
 `index.js` is therefore never mistaken for the plugin entry, and the userscript keeps its raw URL.
 
+### Console domain tags are a companion contract
+
+Every line Orion writes through the Vencord `Logger` opens with one of eleven domain tags:
+
+```
+[Startup]  [System]   [Cycle]   [Quest]  [Enroll]  [Task]
+[Claim]    [Network]  [Achievement]  [Bypass]  [Patcher]
+```
+
+They are not decoration. A companion plugin running against an Orion older than the structured
+event API in `companionEvents.ts` has nothing else to classify output by, and the alternative is
+matching the prose, which is what QuestUI was doing until v4.10.13 changed three sentences at once
+and silently reclassified them (issue #80). Tag plus console level is a boundary Orion can actually
+hold; the wording after the tag is not, and is deliberately not promised.
+
+So: adding a twelfth tag is a breaking change for companions and belongs in the release notes.
+Reaching for a new word because a new file needs a label is how the set grew to twenty before it
+was normalised, with `[ACTIVITY]` (a task type wearing a domain tag), `[FetchGame]`, `[Dispatcher]`,
+`[Lifecycle]`, `[Notification]`, `[Settings]`, `[Stop]` and `[UI]` all inventing their own. Those
+now sit under `[Task]` or `[System]`.
+
+The tags line up one to one with the `category` field on structured companion events, so a
+companion that degrades from the event API to console parsing lands on the same taxonomy rather
+than a different one.
+
+`[OrionQuests]` in `index.tsx` is not one of these. It is the plugin's own `console.log` prefix for
+lifecycle messages that exist before the `Logger` does, and no companion should key on it.
+
 ## Contributing
 
 See `CONTRIBUTING.md` in the repo root.
