@@ -18,6 +18,7 @@ import { companionFailure, COMPANION_EVENT_CODES, emitCompanionEvent } from "./c
 import { setAchievementBypassHook } from "./hooks";
 import { Patcher } from "./patcher";
 import { questBlocker, recordOutcome, selectQuestTaskConfig, summarizeRun, taskEntries } from "./questConfig";
+import { schedulerLaneForTaskType, schedulerMetadata, type SchedulerLane, type SchedulerSnapshot, type SchedulerTaskView } from "./schedulerMetadata";
 import { settings } from "./settings";
 import { TaskControlRegistry, type TaskLifecycle } from "./taskControl";
 import { TaskRunner } from "./tasks";
@@ -168,6 +169,31 @@ export function subscribeDashboard(fn: () => void): () => void {
     return () => dashboardListeners.delete(fn);
 }
 
+function schedulerTaskViews(): SchedulerTaskView[] {
+    const views: SchedulerTaskView[] = [];
+    for (const entry of dashboard.values()) {
+        const control = taskControls.get(entry.id);
+        if (!control) continue;
+        const lane = schedulerLaneForTaskType(entry.type);
+        views.push({
+            questId: entry.id,
+            lane,
+            active: control.active,
+            started: control.started,
+        });
+    }
+    return views;
+}
+
+export function readSchedulerSnapshot(): SchedulerSnapshot {
+    reconcileSessionAccount();
+    return schedulerMetadata.snapshot(schedulerTaskViews());
+}
+
+export function subscribeSchedulerState(listener: () => void): () => void {
+    return schedulerMetadata.subscribe(listener);
+}
+
 export function getQuestStore(): any {
     if (!questStore) questStore = findStore("QuestStore") || findStore("QuestsStore");
     return questStore;
@@ -194,6 +220,7 @@ function emitDashboard(): void {
         }
     } finally {
         dashboardDispatchDepth--;
+        schedulerMetadata.notify();
     }
 }
 
@@ -413,28 +440,37 @@ interface ScheduledTask {
 
 async function runConcurrent(
     scheduled: ScheduledTask[],
+    lane: SchedulerLane,
     limit: number,
     runId: number,
     runRuntime: OrionRuntime,
 ): Promise<void> {
+    if (scheduled.length === 0) return;
+
+    const effectiveLimit = Math.max(1, limit);
+    const laneToken = schedulerMetadata.beginLane(lane, effectiveLimit);
     const executing = new Set<Promise<void>>();
 
-    for (const task of scheduled) {
-        if (!isRunActive(runId, runRuntime)) break;
-        if (!task.isActive()) continue;
+    try {
+        for (const task of scheduled) {
+            if (!isRunActive(runId, runRuntime)) break;
+            if (!task.isActive()) continue;
 
-        let p!: Promise<void>;
-        p = task.run()
-            .catch(error => logger.error("[Task] Worker rejected unexpectedly:", error))
-            .finally(() => executing.delete(p));
-        executing.add(p);
+            let p!: Promise<void>;
+            p = task.run()
+                .catch(error => logger.error("[Task] Worker rejected unexpectedly:", error))
+                .finally(() => executing.delete(p));
+            executing.add(p);
 
-        await sleep(rnd(1500, 4000));
-        if (!isRunActive(runId, runRuntime)) break;
-        if (executing.size >= Math.max(1, limit)) await Promise.race(executing);
+            await sleep(rnd(1500, 4000));
+            if (!isRunActive(runId, runRuntime)) break;
+            if (executing.size >= effectiveLimit) await Promise.race(executing);
+        }
+
+        await Promise.all(executing);
+    } finally {
+        schedulerMetadata.endLane(lane, laneToken);
     }
-
-    await Promise.all(executing);
 }
 
 async function onTaskComplete(
@@ -885,6 +921,7 @@ async function mainLoop(
                         isActive: () => isTaskActive(runId, runRuntime, t),
                         run: async () => {
                             if (!taskControls.markStarted(q.id, control.generation)) return;
+                            schedulerMetadata.notify();
 
                             const work = executeTask().catch(error => {
                                 // A handler exception must not leave a RUNNING/QUEUE tombstone after
@@ -929,13 +966,13 @@ async function mainLoop(
 
                             const settling = work.finally(() => {
                                 taskControls.release(q.id, control.generation, error => logTaskCleanupError(q.id, error));
+                                schedulerMetadata.notify();
                             });
                             await Promise.race([settling, control.cancelled]);
                         },
                     };
 
-                    if (type === "WATCH_VIDEO") queues.video.push(scheduled);
-                    else queues.game.push(scheduled);
+                    queues[schedulerLaneForTaskType(type)].push(scheduled);
                 } catch (e: any) {
                     if (isRunActive(runId, runRuntime)) logger.error(`[Quest] Error processing ${q.id}: ${e?.message}`);
                 }
@@ -951,8 +988,8 @@ async function mainLoop(
                     message: `Cycle #${loopCount} is processing ${queues.video.length} video task(s) and ${queues.game.length} game-lane task(s).`,
                 });
                 await Promise.all([
-                    runConcurrent(queues.game, settings.store.gameConcurrency ?? 1, runId, runRuntime),
-                    runConcurrent(queues.video, settings.store.videoConcurrency ?? 2, runId, runRuntime),
+                    runConcurrent(queues.game, "game", settings.store.gameConcurrency ?? 1, runId, runRuntime),
+                    runConcurrent(queues.video, "video", settings.store.videoConcurrency ?? 2, runId, runRuntime),
                 ]);
             } else if (isRunActive(runId, runRuntime)) {
                 await sleep(rnd(4000, 6000));
@@ -1016,6 +1053,7 @@ export async function startOrion(): Promise<void> {
         return;
     }
 
+    schedulerMetadata.clear();
     const runId = ++nextRunId;
     const runRuntime: OrionRuntime = {
         running: true,
@@ -1152,6 +1190,7 @@ export function stopOrion(): void {
     activeRuntime = null;
     RUNTIME.running = false;
     if (runRuntime) runRuntime.running = false;
+    schedulerMetadata.clear();
 
     let failed = 0;
     taskControls.cancelAll(error => {
