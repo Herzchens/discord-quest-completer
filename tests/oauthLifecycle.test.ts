@@ -35,6 +35,21 @@ test("cleanup deletes only same-app grants created after the snapshot", async ()
     assert.deepEqual(deleted, ["created-A"]);
 });
 
+test("cleanup treats an unknown identity as unavailable without listing grants", async () => {
+    let listed = false;
+    const outcome = await cleanupCreatedOAuthGrants({
+        accountId: "user-1",
+        appId: "app-A",
+        preGrantIds: new Set(),
+        getCurrentAccountId: () => null,
+        listGrants: async () => { listed = true; return []; },
+        deleteGrant: async () => { throw new Error("must not delete"); },
+    });
+
+    assert.deepEqual(outcome, { status: "account-unavailable", deleted: 0 });
+    assert.equal(listed, false);
+});
+
 test("cleanup never lists grants after the account already changed", async () => {
     let listed = false;
     const outcome = await cleanupCreatedOAuthGrants({
@@ -48,6 +63,27 @@ test("cleanup never lists grants after the account already changed", async () =>
 
     assert.deepEqual(outcome, { status: "account-changed", deleted: 0 });
     assert.equal(listed, false);
+});
+
+test("unknown identity after grant listing prevents every DELETE", async () => {
+    const listing = deferred<Array<{ id: string; application: { id: string; }; }>>();
+    let account: string | null = "user-1";
+    const deleted: string[] = [];
+
+    const cleanup = cleanupCreatedOAuthGrants({
+        accountId: "user-1",
+        appId: "app-A",
+        preGrantIds: new Set(),
+        getCurrentAccountId: () => account,
+        listGrants: () => listing.promise,
+        deleteGrant: async id => { deleted.push(id); },
+    });
+
+    account = null;
+    listing.resolve([{ id: "created-A", application: { id: "app-A" } }]);
+
+    assert.deepEqual(await cleanup, { status: "account-unavailable", deleted: 0 });
+    assert.deepEqual(deleted, []);
 });
 
 test("account switch while grant listing is in flight prevents every DELETE", async () => {
@@ -69,6 +105,29 @@ test("account switch while grant listing is in flight prevents every DELETE", as
 
     assert.deepEqual(await cleanup, { status: "account-changed", deleted: 0 });
     assert.deepEqual(deleted, []);
+});
+
+test("unknown identity between grant deletions stops before touching the next grant", async () => {
+    let account: string | null = "user-1";
+    const deleted: string[] = [];
+
+    const outcome = await cleanupCreatedOAuthGrants({
+        accountId: "user-1",
+        appId: "app-A",
+        preGrantIds: new Set(),
+        getCurrentAccountId: () => account,
+        listGrants: async () => [
+            { id: "first", application: { id: "app-A" } },
+            { id: "second", application: { id: "app-A" } },
+        ],
+        deleteGrant: async id => {
+            deleted.push(id);
+            account = null;
+        },
+    });
+
+    assert.deepEqual(outcome, { status: "account-unavailable", deleted: 1 });
+    assert.deepEqual(deleted, ["first"]);
 });
 
 test("account switch between grant deletions stops before touching the next grant", async () => {
