@@ -94,7 +94,7 @@ const MAX_TIME = 25 * 60 * 1000;
 const HEARTBEAT_GRACE = 90 * 1000;
 const MAX_TASK_FAILURES = 5;
 
-type ControlledTaskInfo = TaskInfo & { generation?: number; };
+type ControlledTaskInfo = TaskInfo & { generation?: number; accountId?: string; };
 
 const BLACKLISTED_QUEST_ID = "1412491570820812933";
 
@@ -103,6 +103,7 @@ export interface BypassResult {
     reason: string | null;
     failure?: CompanionEventFailure;
     disabled?: boolean;
+    retryLater?: boolean;
 }
 
 interface AchievementFallbackEvent {
@@ -630,7 +631,7 @@ export class TaskRunner {
         if (this.isTaskActive(t) && cur >= t.target) await this.cb.onComplete(q, t);
     }
 
-    async bypassAchievement(q: Quest, t: TaskInfo, fallback?: AchievementFallbackEvent): Promise<BypassResult> {
+    async bypassAchievement(q: Quest, t: ControlledTaskInfo, fallback?: AchievementFallbackEvent): Promise<BypassResult> {
         let reason: string | null = null;
         if (!this.isTaskActive(t)) return { ok: false, reason };
 
@@ -657,7 +658,27 @@ export class TaskRunner {
             });
         }
 
-        const accountId = this.stores.UserStore?.getCurrentUser?.()?.id ?? null;
+        const accountId = t.accountId ?? null;
+        if (!accountId) {
+            reason = "this task has no confirmed Discord account owner, so Orion refused to create an OAuth grant";
+            logger.warn(`[Bypass] ${reason}.`);
+            return { ok: false, reason };
+        }
+
+        const getCurrentAccountId = (): string | null => {
+            try { return this.stores.UserStore?.getCurrentUser?.()?.id ?? null; }
+            catch { return null; }
+        };
+        const requireConfirmedOwner = (stage: string, retryIfUnknown: boolean): BypassResult | null => {
+            const currentAccountId = getCurrentAccountId();
+            if (currentAccountId === accountId) return null;
+            reason = currentAccountId == null
+                ? `Discord account identity is temporarily unavailable ${stage}, so Orion refused to touch OAuth state`
+                : `the Discord account changed ${stage}, so Orion stopped the OAuth flow`;
+            logger.warn(`[Bypass] ${reason}.`);
+            return { ok: false, reason, retryLater: currentAccountId == null && retryIfUnknown };
+        };
+
         const appId = String(t.appId || q.config?.application?.id || "");
         if (!appId) {
             reason = "this quest carries no application id, so there is nothing to authorize against";
@@ -693,15 +714,22 @@ export class TaskRunner {
             return { ok: false, reason, failure };
         }
 
+        const beforeSnapshotOwner = requireConfirmedOwner("before the grant snapshot", true);
+        if (beforeSnapshotOwner) return beforeSnapshotOwner;
+
         let preGrantIds: Set<string> | undefined;
         try {
             const before: any = await this.stores.API.get({ url: "/oauth2/tokens" });
             if (!this.isTaskActive(t)) return { ok: false, reason };
+            const afterSnapshotOwner = requireConfirmedOwner("after the grant snapshot", true);
+            if (afterSnapshotOwner) return afterSnapshotOwner;
             preGrantIds = new Set((before?.body || [])
                 .filter((tk: any) => tk.application?.id === appId)
                 .map((tk: any) => tk.id));
         } catch (e: any) {
             if (!this.isTaskActive(t)) return { ok: false, reason };
+            const snapshotFailureOwner = requireConfirmedOwner("after the grant snapshot failed", true);
+            if (snapshotFailureOwner) return snapshotFailureOwner;
             reason = "Orion could not snapshot existing OAuth grants, so the bypass was aborted before authorization";
             const failure = errorFailure(e, { terminal: true, retryable: false, reason });
             logger.warn(`[Bypass] Couldn't snapshot existing grants; aborting so we never leave an un-revocable authorization: ${e?.message}`);
@@ -719,8 +747,16 @@ export class TaskRunner {
             return { ok: false, reason, failure };
         }
 
+        let authorizationStarted = false;
         try {
             if (!this.isTaskActive(t)) return { ok: false, reason };
+            if (!settings.store.achievementBypass) {
+                reason = "Achievement bypass is off in settings";
+                logger.info(`[Bypass] Achievement OAuth bypass was disabled before authorization; not authorizing "${t.name}".`);
+                return { ok: false, reason, disabled: true };
+            }
+            const beforeAuthorizeOwner = requireConfirmedOwner("before authorization", true);
+            if (beforeAuthorizeOwner) return beforeAuthorizeOwner;
             logger.info(`[Bypass] Trying Discord Says auth flow for "${t.name}"...`);
             emitCompanionEvent({
                 code: COMPANION_EVENT_CODES.BYPASS_STARTED,
@@ -732,7 +768,7 @@ export class TaskRunner {
                 taskType: t.type,
             });
 
-            const authRes: any = await this.stores.API.post({
+            const authRequest = this.stores.API.post({
                 url: "/oauth2/authorize",
                 query: {
                     response_type: "code",
@@ -746,6 +782,8 @@ export class TaskRunner {
                     location_context: { guild_id: "10000", channel_id: "10000", channel_type: 10000 }
                 }
             });
+            authorizationStarted = true;
+            const authRes: any = await authRequest;
             if (!this.isTaskActive(t)) return { ok: false, reason };
             const location: string | undefined = authRes?.body?.location;
             if (!location) throw new Error("no location in /oauth2/authorize response");
@@ -840,17 +878,15 @@ export class TaskRunner {
             });
             return { ok: false, reason, failure };
         } finally {
-            // Compensating cleanup is intentionally allowed after task cancellation because a
-            // request already on the wire may have created a grant. Account identity is checked
-            // around every awaited cleanup boundary so an old task cannot touch the next user's
-            // OAuth state after a Discord account switch.
-            if (preGrantIds && accountId) {
+            if (!preGrantIds) {
+                logger.warn(`[Bypass] OAuth cleanup for "${t.name}" had no pre-authorization grant snapshot; nothing was revoked.`);
+            } else if (authorizationStarted) {
                 try {
                     const cleanup = await cleanupCreatedOAuthGrants({
                         accountId,
                         appId,
                         preGrantIds,
-                        getCurrentAccountId: () => this.stores.UserStore?.getCurrentUser?.()?.id ?? null,
+                        getCurrentAccountId,
                         listGrants: async () => {
                             const after: any = await this.stores.API.get({ url: "/oauth2/tokens" });
                             return after?.body || [];
@@ -861,6 +897,8 @@ export class TaskRunner {
                     });
                     if (cleanup.status === "account-changed") {
                         logger.warn(`[Bypass] Account changed while cleaning up "${t.name}"; stopped OAuth grant cleanup rather than touching the new account.`);
+                    } else if (cleanup.status === "account-unavailable") {
+                        logger.warn(`[Bypass] Account identity was unavailable while cleaning up "${t.name}"; stopped OAuth grant cleanup rather than touching unconfirmed OAuth state.`);
                     }
                 } catch (e: any) {
                     debug(logger, `[Bypass] Deauthorize cleanup non-fatal: ${e?.message}`);
@@ -953,6 +991,19 @@ export class TaskRunner {
         if (bypass.disabled) {
             this.consentSkipped.add(q.id);
             return this.failTask(q, t, bypass.reason ?? "Achievement bypass is off in settings");
+        }
+
+        if (bypass.retryLater) {
+            this.cb.onProgress(q.id, {
+                name: t.name,
+                type: t.type,
+                cur,
+                max: t.target,
+                status: "QUEUE",
+                reason: bypass.reason,
+            });
+            logger.info(`[Task] Deferring "${t.name}" until Discord reports the current account again.`);
+            return;
         }
 
         logger.warn(`[Task] Skipping "${t.name}". No auto-completion path worked (heartbeat rejected, bypass blocked). Likely age-gated/delisted on your account.`);
