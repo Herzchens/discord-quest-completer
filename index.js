@@ -210,6 +210,30 @@
         return reward.premium > reward.orbs ? `${reward.orbs} Orbs (${reward.premium} with Nitro)` : `${reward.orbs} Orbs`;
     };
 
+    // The Orb balance Discord reports for the account, or null for anything that is not a whole
+    // non-negative number. Zero is a real balance and is kept, unlike a payout of zero.
+    const orbBalance = v => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null);
+
+    // Orbs on the account. VirtualCurrencyStore holds the figure Discord's own Orb pill shows
+    // once the client has fetched it, so that is read first. Discord keeps it current itself:
+    // the gateway pushes VIRTUAL_CURRENCY_BALANCE_UPDATE into it and LOGIN_SUCCESS clears it,
+    // so a number there belongs to the signed-in account. Before then it is null and one GET of
+    // the balance endpoint fills it in. Nothing polls; this runs once when the picker opens.
+    // The GET has no such guarantee, so the account is checked on both sides of the await and
+    // a switch in between discards the response. With no signed-in account there is nothing to
+    // check against, so the read stops before the request.
+    const readOrbBalance = async () => {
+        const store = Mods.OrbStore;
+        const stored = orbBalance(store?.getCurrentBalance?.() ?? store?.balance);
+        if (stored !== null) return stored;
+        const account = Mods.UserStore?.getCurrentUser?.()?.id ?? null;
+        if (!account) throw new Error('no account is signed in');
+        const res = await Mods.API.get({ url: '/users/@me/virtual-currency/balance' });
+        const after = Mods.UserStore?.getCurrentUser?.()?.id ?? null;
+        if (after !== account) throw new Error('the account changed during the read');
+        return orbBalance(res?.body?.balance);
+    };
+
     // The server-sealed attribution blob Discord echoes back when enrolling in or claiming a
     // quest. The server issues it per quest and ships it with the quest list; the client
     // returns it unmodified. Orion sent neither sealed field, so every enrollment and claim it
@@ -998,6 +1022,9 @@
                 const getVisibleCheckboxes = () => Array.from(form.querySelectorAll('.quest-pick input[type="checkbox"]'))
                     .filter(cb => !cb.closest('.quest-pick').classList.contains('hidden'));
 
+                // Filled in once the balance read below settles; empty until then and on failure.
+                let balanceText = '';
+
                 const syncUI = () => {
                     const visibleCbs = getVisibleCheckboxes();
                     const totalChecked = visibleCbs.filter(cb => cb.checked).length;
@@ -1009,8 +1036,10 @@
                         const picked = visibleCbs.filter(cb => cb.checked).map(cb => cb.closest('.quest-pick'));
                         const sum = attr => picked.reduce((total, el) => total + (Number(el?.getAttribute(attr)) || 0), 0);
                         const orbs = sum('data-orbs');
-                        orbTotal.textContent = orbs > 0 ? `${fmtOrbs({ orbs, premium: sum('data-premium-orbs') })} selected` : '';
-                        orbTotal.style.display = orbs > 0 ? 'block' : 'none';
+                        const selectedText = orbs > 0 ? `${fmtOrbs({ orbs, premium: sum('data-premium-orbs') })} selected` : '';
+                        const text = [selectedText, balanceText].filter(Boolean).join(' · ');
+                        orbTotal.textContent = text;
+                        orbTotal.style.display = text ? 'block' : 'none';
                     }
 
                     const startBtnText = document.getElementById('start-btn-text');
@@ -1093,6 +1122,17 @@
                 // apply layout lock and sync initial button states
                 body.classList.add('picker-mode');
                 syncUI();
+
+                readOrbBalance()
+                    .then(balance => {
+                        if (balance === null) {
+                            Logger.log('[System] Discord sent no Orb balance, so the picker shows none.', 'warn');
+                            return;
+                        }
+                        balanceText = `${balance} Orbs on the account`;
+                        syncUI();
+                    })
+                    .catch(e => Logger.log(`[System] Could not read the Orb balance: ${e?.message ?? e}`, 'warn'));
             });
         }
     };
@@ -2325,6 +2365,7 @@
                     ChanStore: W.findStore('ChannelStore'),
                     GuildChanStore: W.findStore('GuildChannelStore'),
                     UserStore: W.findStore('UserStore'),
+                    OrbStore: W.findStore('VirtualCurrencyStore'),
                     Dispatcher: W.Common?.FluxDispatcher || W.findByProps('dispatch', 'subscribe', 'flushWaitQueue'),
                     API: W.Common?.RestAPI || W.findByProps('get', 'post', 'del'),
                     Router: routerModule,
@@ -2450,6 +2491,7 @@
                 ChanStore: findStore('ChannelStore'),
                 GuildChanStore: findStore('GuildChannelStore'),
                 UserStore: findStore('UserStore'),
+                OrbStore: findStore('VirtualCurrencyStore'),
                 Dispatcher: findDispatcher(),
                 API: findAPI(),
                 Router: findRouter(),

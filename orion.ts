@@ -18,6 +18,7 @@ import { companionFailure, COMPANION_EVENT_CODES, emitCompanionEvent } from "./c
 import { setAchievementBypassHook } from "./hooks";
 import { Patcher } from "./patcher";
 import { questBlocker, recordOutcome, selectQuestTaskConfig, summarizeRun, taskEntries } from "./questConfig";
+import { orbBalance } from "./questRewards";
 import { schedulerLaneForTaskType, schedulerMetadata, type SchedulerLane, type SchedulerSnapshot, type SchedulerTaskView } from "./schedulerMetadata";
 import { settings } from "./settings";
 import { TaskControlRegistry, type TaskLifecycle } from "./taskControl";
@@ -100,6 +101,7 @@ let traffic: Traffic | null = null;
 let tasks: TaskRunner | null = null;
 let questStore: any = null;
 let userStore: any = null;
+let virtualCurrencyStore: any = null;
 let sessionOwnerUserId: string | null = null;
 /**
  * Why the last run ended, when it ended on its own rather than by the user stopping it.
@@ -202,6 +204,36 @@ export function getQuestStore(): any {
 export function getUserStore(): any {
     if (!userStore) userStore = findStore("UserStore");
     return userStore;
+}
+
+export function getVirtualCurrencyStore(): any {
+    if (!virtualCurrencyStore) virtualCurrencyStore = findStore("VirtualCurrencyStore");
+    return virtualCurrencyStore;
+}
+
+/**
+ * Orbs on the account. VirtualCurrencyStore holds the figure Discord's own Orb pill shows once
+ * the client has fetched it, so that is read first. Discord keeps it current itself: the gateway
+ * pushes VIRTUAL_CURRENCY_BALANCE_UPDATE into it and LOGIN_SUCCESS clears it, so a number there
+ * belongs to the signed-in account. Before then it is null and one GET of the balance endpoint
+ * fills it in. Nothing polls; this runs only when a status is asked for.
+ *
+ * The GET has no such guarantee, so the account is checked on both sides of the await and a
+ * switch in between discards the response. With no signed-in account there is nothing to check
+ * against, so the read stops before the request.
+ */
+export async function readOrbBalance(): Promise<number | null> {
+    const store = getVirtualCurrencyStore();
+    const stored = orbBalance(store?.getCurrentBalance?.() ?? store?.balance);
+    if (stored !== null) return stored;
+
+    const API = (RestAPI as any) || findByProps("get", "post", "del");
+    if (!API) throw new Error("RestAPI not found");
+    const account = getCurrentUserId();
+    if (!account) throw new Error("no account is signed in");
+    const res = await API.get({ url: "/users/@me/virtual-currency/balance" });
+    if (getCurrentUserId() !== account) throw new Error("the account changed during the read");
+    return orbBalance(res?.body?.balance);
 }
 
 export function getCurrentUserId(): string | null {
