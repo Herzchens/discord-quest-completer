@@ -217,17 +217,18 @@
     // Orbs on the account. VirtualCurrencyStore holds the figure Discord's own Orb pill shows
     // once the client has fetched it, so that is read first. Discord keeps it current itself:
     // the gateway pushes VIRTUAL_CURRENCY_BALANCE_UPDATE into it and LOGIN_SUCCESS clears it,
-    // so a number there belongs to the signed-in account. Before then it is null and one GET of
-    // the balance endpoint fills it in. Nothing polls; this runs once when the picker opens.
-    // The GET has no such guarantee, so the account is checked on both sides of the await and
-    // a switch in between discards the response. With no signed-in account there is nothing to
-    // check against, so the read stops before the request.
+    // so a number there belongs to the account of the last login. Before then it is null and one
+    // GET of the balance endpoint fills it in. Nothing polls; this runs once when the picker opens.
+    // The store clears on LOGIN_SUCCESS and not on LOGOUT, so between the two it still holds the
+    // old number. The read stops first when no account is signed in, which covers that gap and
+    // the GET alike. The GET is also checked on both sides of the await, and a switch in between
+    // discards the response.
     const readOrbBalance = async () => {
+        const account = Mods.UserStore?.getCurrentUser?.()?.id ?? null;
+        if (!account) throw new Error('no account is signed in');
         const store = Mods.OrbStore;
         const stored = orbBalance(store?.getCurrentBalance?.() ?? store?.balance);
         if (stored !== null) return stored;
-        const account = Mods.UserStore?.getCurrentUser?.()?.id ?? null;
-        if (!account) throw new Error('no account is signed in');
         const res = await Mods.API.get({ url: '/users/@me/virtual-currency/balance' });
         const after = Mods.UserStore?.getCurrentUser?.()?.id ?? null;
         if (after !== account) throw new Error('the account changed during the read');

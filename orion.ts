@@ -215,22 +215,24 @@ export function getVirtualCurrencyStore(): any {
  * Orbs on the account. VirtualCurrencyStore holds the figure Discord's own Orb pill shows once
  * the client has fetched it, so that is read first. Discord keeps it current itself: the gateway
  * pushes VIRTUAL_CURRENCY_BALANCE_UPDATE into it and LOGIN_SUCCESS clears it, so a number there
- * belongs to the signed-in account. Before then it is null and one GET of the balance endpoint
- * fills it in. Nothing polls; this runs only when a status is asked for.
+ * belongs to the account of the last login. Before then it is null and one GET of the balance
+ * endpoint fills it in. Nothing polls; this runs only when a status is asked for.
  *
- * The GET has no such guarantee, so the account is checked on both sides of the await and a
- * switch in between discards the response. With no signed-in account there is nothing to check
- * against, so the read stops before the request.
+ * The store clears on LOGIN_SUCCESS and not on LOGOUT, so between the two it still holds the
+ * old number. The read stops first when no account is signed in, which covers that gap and
+ * the GET alike. The GET is also checked on both sides of the await, and a switch in between
+ * discards the response.
  */
 export async function readOrbBalance(): Promise<number | null> {
+    const account = getCurrentUserId();
+    if (!account) throw new Error("no account is signed in");
+
     const store = getVirtualCurrencyStore();
     const stored = orbBalance(store?.getCurrentBalance?.() ?? store?.balance);
     if (stored !== null) return stored;
 
     const API = (RestAPI as any) || findByProps("get", "post", "del");
     if (!API) throw new Error("RestAPI not found");
-    const account = getCurrentUserId();
-    if (!account) throw new Error("no account is signed in");
     const res = await API.get({ url: "/users/@me/virtual-currency/balance" });
     if (getCurrentUserId() !== account) throw new Error("the account changed during the read");
     return orbBalance(res?.body?.balance);
