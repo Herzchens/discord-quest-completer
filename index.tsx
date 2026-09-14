@@ -13,6 +13,7 @@ import definePlugin from "@utils/types";
 import { subscribeCompanionEvents, type CompanionEventListener } from "./companionEvents";
 import { setWatchForEnrollmentsHook } from "./hooks";
 import {
+    canUseMoreQuestOrbs,
     getCurrentUserId,
     getLastRunOutcome,
     getQuestStore,
@@ -297,7 +298,9 @@ async function statusSummary(): Promise<string> {
 
     // A dashboard entry carries progress only, so the payout comes from the quest the store still
     // holds. The task line and both totals below want the same number, so each quest is read once
-    // instead of three times.
+    // instead of three times. Which side of it prints is decided once here too, so the lines and
+    // the totals cannot disagree.
+    const boosted = canUseMoreQuestOrbs();
     const orbsById = new Map<string, OrbReward | null>();
     for (const e of entries) {
         let reward: OrbReward | null = null;
@@ -311,7 +314,7 @@ async function statusSummary(): Promise<string> {
 
     const lines = entries.map(e => {
         const pct = e.max > 0 ? Math.min(100, (e.cur / e.max) * 100).toFixed(0) : "?";
-        const orbs = formatOrbReward(orbsById.get(e.id) ?? null);
+        const orbs = formatOrbReward(orbsById.get(e.id) ?? null, boosted);
         const payout = orbs ? ` [${orbs}]` : "";
         const waiting = e.actionRequired === "ENROLL"
             ? ", waiting for you to accept it in Discord's Quests page"
@@ -331,7 +334,7 @@ async function statusSummary(): Promise<string> {
     // Orbs land on the account at claim time, so the total is what these tasks are worth and the
     // second half is how much of it sits unclaimed.
     const orbLine = orbTotal
-        ? [`Orbs: ${formatOrbReward(orbTotal)} across these task(s)${orbsWaiting ? `, ${formatOrbReward(orbsWaiting)} of it still to claim` : ""}.`]
+        ? [`Orbs: ${formatOrbReward(orbTotal, boosted)} across these task(s)${orbsWaiting ? `, ${formatOrbReward(orbsWaiting, boosted)} of it still to claim` : ""}.`]
         : [];
     return [header, ...lines, ...orbLine, await balanceLine(), ...footer].join("\n");
 }

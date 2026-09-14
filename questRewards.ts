@@ -9,7 +9,10 @@
 export interface OrbReward {
     /** orbQuantity, summed over every reward entry that carries one. */
     orbs: number;
-    /** premiumOrbQuantity, the Nitro payout. Equals orbs when Discord sends no separate figure. */
+    /**
+     * premiumOrbQuantity, the payout for an account Discord boosts (Nitro or Xbox Game Pass).
+     * Equals orbs when Discord sends no separate figure.
+     */
     premiumOrbs: number;
 }
 
@@ -60,14 +63,13 @@ export function totalOrbReward(rewards: Array<OrbReward | null>): OrbReward | nu
 /**
  * One payout as text, empty for a quest that pays no Orbs.
  *
- * The Nitro figure is named only when it differs from the base one, so a non-subscriber is not
- * told the same number twice.
+ * Only the figure the account will receive is printed: the premium one when Discord boosts
+ * the account, the base one otherwise. A total passed through here lands on the same side as
+ * the per-quest lines it sums, so the two agree.
  */
-export function formatOrbReward(reward: OrbReward | null): string {
+export function formatOrbReward(reward: OrbReward | null, boosted: boolean): string {
     if (!reward) return "";
-    return reward.premiumOrbs > reward.orbs
-        ? `${reward.orbs} Orbs (${reward.premiumOrbs} with Nitro)`
-        : `${reward.orbs} Orbs`;
+    return `${boosted ? reward.premiumOrbs : reward.orbs} Orbs`;
 }
 
 /**

@@ -186,8 +186,9 @@
     // Orbs a quest pays out, as { orbs, premium }, or null when it pays none. Every reward entry
     // is summed. The quantity sits on the entry and a quest can list several, so reading
     // rewards[0] reports no Orbs at all for a quest that lists an in-game item first.
-    // premiumOrbQuantity is Discord's own Nitro figure and is sometimes absent or equal, so it
-    // falls back to the base number rather than being multiplied here.
+    // premiumOrbQuantity is the figure for an account Discord boosts (Nitro or Xbox Game Pass)
+    // and is sometimes absent or equal, so it falls back to the base number rather than being
+    // multiplied here.
     const orbReward = config => {
         const rewards = config?.rewardsConfig?.rewards;
         if (!Array.isArray(rewards)) return null;
@@ -203,12 +204,25 @@
         return orbs > 0 ? { orbs, premium } : null;
     };
 
-    // The Nitro figure is only named when it differs, so a non-subscriber is not told the same
-    // number twice.
-    const fmtOrbs = reward => {
-        if (!reward) return '';
-        return reward.premium > reward.orbs ? `${reward.orbs} Orbs (${reward.premium} with Nitro)` : `${reward.orbs} Orbs`;
+    // Whether Discord pays this account the premium figure. Discord's own quest card decides
+    // with canUseMoreQuestOrbs on its premium feature module, which covers Nitro and Xbox Game
+    // Pass alike, so the same function is called with the signed-in user. When the module is
+    // missing or the call throws the answer is false and the base figure is shown, since
+    // under-promising is the safe side for a number used to pick what to farm.
+    const canUseMoreQuestOrbs = () => {
+        try {
+            const user = Mods.UserStore?.getCurrentUser?.();
+            return user != null && Mods.Premium?.canUseMoreQuestOrbs?.(user) === true;
+        } catch {
+            return false;
+        }
     };
+
+    // The figure the account will receive, so a total built from these sits on the same side
+    // as the per-quest numbers it sums.
+    const orbPayout = (reward, boosted) => (reward ? (boosted ? reward.premium : reward.orbs) : 0);
+
+    const fmtOrbs = (reward, boosted) => (reward ? `${orbPayout(reward, boosted)} Orbs` : '');
 
     // The Orb balance Discord reports for the account, or null for anything that is not a whole
     // non-negative number. Zero is a real balance and is kept, unlike a payout of zero.
@@ -915,6 +929,9 @@
                 const items = [];
                 const rewardTypes = new Map();
                 const questTypes = new Set();
+                // Decided once for the whole list, so every card and the selected total print
+                // the same side of the payout.
+                const boosted = canUseMoreQuestOrbs();
 
                 const REWARD_META = { 1: { label: "IN-GAME", color: "#e67e22" }, 3: { label: "AVATAR DECORATION", color: "#a358f2" }, 4: { label: "ORBS", color: "#5865F2" } };
                 const REWARD_FALLBACK = { label: "OTHER", color: "#949ba4" };
@@ -950,9 +967,8 @@
                         type: displayType,
                         rewardType,
                         rewardText,
-                        orbs: orbs?.orbs ?? 0,
-                        premiumOrbs: orbs?.premium ?? 0,
-                        orbText: fmtOrbs(orbs),
+                        orbs: orbPayout(orbs, boosted),
+                        orbText: fmtOrbs(orbs, boosted),
                         color: meta.color
                     });
                 });
@@ -960,7 +976,7 @@
                 if (!items.length) return closePicker({ selectedQuests: new Set(), autoEnroll: false, autoClaim: false, playSound: false });
 
                 const buildCard = (q) => `
-                    <label class="quest-pick" data-rt="${q.rewardType}" data-qt="${q.type}" data-orbs="${q.orbs}" data-premium-orbs="${q.premiumOrbs}" style="border-left-color: ${q.color};">
+                    <label class="quest-pick" data-rt="${q.rewardType}" data-qt="${q.type}" data-orbs="${q.orbs}" style="border-left-color: ${q.color};">
                         <input type="checkbox" name="quests" value="${q.id}" class="native-cb" checked>
                         <div class="task-info">
                             <div class="task-name" title="${esc(q.name)}">${esc(q.name)}</div>
@@ -1034,9 +1050,8 @@
                     const orbTotal = document.getElementById('orion-orb-total');
                     if (orbTotal) {
                         const picked = visibleCbs.filter(cb => cb.checked).map(cb => cb.closest('.quest-pick'));
-                        const sum = attr => picked.reduce((total, el) => total + (Number(el?.getAttribute(attr)) || 0), 0);
-                        const orbs = sum('data-orbs');
-                        const selectedText = orbs > 0 ? `${fmtOrbs({ orbs, premium: sum('data-premium-orbs') })} selected` : '';
+                        const orbs = picked.reduce((total, el) => total + (Number(el?.getAttribute('data-orbs')) || 0), 0);
+                        const selectedText = orbs > 0 ? `${orbs} Orbs selected` : '';
                         const text = [selectedText, balanceText].filter(Boolean).join(' · ');
                         orbTotal.textContent = text;
                         orbTotal.style.display = text ? 'block' : 'none';
@@ -2366,6 +2381,7 @@
                     GuildChanStore: W.findStore('GuildChannelStore'),
                     UserStore: W.findStore('UserStore'),
                     OrbStore: W.findStore('VirtualCurrencyStore'),
+                    Premium: W.findByProps('canUseMoreQuestOrbs', 'canUseShopDiscounts'),
                     Dispatcher: W.Common?.FluxDispatcher || W.findByProps('dispatch', 'subscribe', 'flushWaitQueue'),
                     API: W.Common?.RestAPI || W.findByProps('get', 'post', 'del'),
                     Router: routerModule,
@@ -2484,6 +2500,24 @@
                 return undefined;
             }
 
+            // Discord's premium feature checks sit on one plain object of named functions.
+            // Two of them together are specific enough; nothing else exports both.
+            function findPremiumFeatures() {
+                for (const m of modules) {
+                    try {
+                        const exp = m?.exports;
+                        if (!exp || typeof exp !== 'object') continue;
+                        for (const prop of [exp, ...Object.values(exp)]) {
+                            if (prop && typeof prop.canUseMoreQuestOrbs === 'function'
+                                && typeof prop.canUseShopDiscounts === 'function') {
+                                return prop;
+                            }
+                        }
+                    } catch { }
+                }
+                return undefined;
+            }
+
             Mods = {
                 QuestStore: findStore('QuestStore'),
                 RunStore: findStore('RunningGameStore'),
@@ -2492,6 +2526,7 @@
                 GuildChanStore: findStore('GuildChannelStore'),
                 UserStore: findStore('UserStore'),
                 OrbStore: findStore('VirtualCurrencyStore'),
+                Premium: findPremiumFeatures(),
                 Dispatcher: findDispatcher(),
                 API: findAPI(),
                 Router: findRouter(),

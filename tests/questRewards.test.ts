@@ -67,10 +67,19 @@ test("totals skip quests without Orbs and report nothing when none pay any", () 
     assert.equal(totalOrbReward([]), null);
 });
 
-test("the Nitro figure is only named when it differs", () => {
-    assert.equal(formatOrbReward({ orbs: 240, premiumOrbs: 288 }), "240 Orbs (288 with Nitro)");
-    assert.equal(formatOrbReward({ orbs: 240, premiumOrbs: 240 }), "240 Orbs");
-    assert.equal(formatOrbReward(null), "");
+test("one figure prints, the side the account is paid on", () => {
+    assert.equal(formatOrbReward({ orbs: 240, premiumOrbs: 288 }, false), "240 Orbs");
+    assert.equal(formatOrbReward({ orbs: 240, premiumOrbs: 288 }, true), "288 Orbs");
+    assert.equal(formatOrbReward({ orbs: 240, premiumOrbs: 240 }, true), "240 Orbs");
+    assert.equal(formatOrbReward(null, false), "");
+    assert.equal(formatOrbReward(null, true), "");
+});
+
+test("a total prints on the same side as the lines it sums", () => {
+    const total = totalOrbReward([{ orbs: 240, premiumOrbs: 288 }, { orbs: 60, premiumOrbs: 60 }]);
+
+    assert.equal(formatOrbReward(total, false), "300 Orbs");
+    assert.equal(formatOrbReward(total, true), "348 Orbs");
 });
 
 test("an account balance is any whole non-negative number, zero included", () => {
