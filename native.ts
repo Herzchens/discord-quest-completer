@@ -63,3 +63,5 @@ export async function discordsaysProgress(_: IpcMainInvokeEvent, opts: { appId: 
         JSON.stringify({ progress: opts.target })
     );
 }
+
+export { updateOrionRelease } from "./updateNative";

@@ -84,6 +84,7 @@ jobs:
           # discordsays POSTs behind the ACHIEVEMENT bypass still work
           grep -q "OrionQuests" dist/vencordDesktopMain.js
           grep -q "discordsays" dist/vencordDesktopMain.js
+          grep -q "updateOrionRelease" dist/vencordDesktopMain.js
 
           # slash command, semantic enrollment wake-up and the narrow companion surface are bundled
           grep -q "Control the OrionQuests engine" dist/renderer.js
