@@ -10,31 +10,45 @@ Thanks for taking the time to contribute! This project is community-maintained a
 
 ## Local workflow
 
-Orion has **no build step**. You edit `index.js` directly. Recommended flow:
+The two distributables are edited differently:
+
+- **`index.js`, the userscript.** No build step. Edit it directly.
+- **The plugin (`*.ts`, `*.tsx` at the repo root).** Built by Vencord. See [`docs/VENCORD-PLUGIN.md`](docs/VENCORD-PLUGIN.md) for a dev checkout.
 
 ```bash
 # clone
 git clone https://github.com/nyxxbit/discord-quest-completer.git
 cd discord-quest-completer
 
-# lint before pushing
+# userscript: lint + syntax check
 npx eslint@9 index.js
-
-# syntax check
 node --check index.js
+
+# plugin: the unit tests, no Vencord checkout needed
+npx tsx@4 --test tests/*.test.ts
 ```
 
-Both checks run in CI on every PR, so make them pass locally first.
+All three run in CI on every PR, so make them pass locally first.
 
 ## Testing changes
 
-There is no automated test harness. Changes must be validated manually:
+The plugin's pure logic is covered by `tests/`: the scheduler's task control and
+generations, the heartbeat watchdog, quest selection and blockers, Orb rewards, the request
+queue's retry and cancellation behaviour, companion events, and OAuth grant cleanup. Those
+modules import nothing from Vencord precisely so the suite runs anywhere with one command.
+**Keep it that way** — pulling `@utils/…`, `@api/…` or `@webpack` into a tested module breaks
+the fast CI job. Inject the dependency instead, the way `Traffic` takes its logger.
+
+Everything else — store discovery, the patcher, the dashboard, and every network path — is
+only verifiable against a live client:
 
 1. Open Discord desktop (Stable, PTB, or Canary).
 2. Open DevTools (`Ctrl+Shift+I`).
 3. Paste your edited `index.js` into the console.
 4. Verify the behavior you changed. Check the log panel for errors.
 5. Click **STOP** and confirm clean shutdown (no orphan listeners, no console errors).
+
+A change to the plugin needs the same pass inside a real Vencord build, not just green tests.
 
 ## Code style
 
@@ -65,7 +79,9 @@ There is no automated test harness. Changes must be validated manually:
 
 - [ ] ESLint passes (`npx eslint@9 index.js`).
 - [ ] `node --check index.js` passes.
+- [ ] Unit tests pass (`npx tsx@4 --test tests/*.test.ts`), with a new test when the change is to logic they cover.
 - [ ] Manually tested in the Discord desktop client.
+- [ ] The userscript and the plugin got the same fix, if the behaviour exists in both.
 - [ ] README / ARCHITECTURE updated if behavior or structure changed.
 - [ ] `CONFIG.VERSION` bumped if the change is user-facing.
 - [ ] Changelog entry added at the top of the README changelog section.

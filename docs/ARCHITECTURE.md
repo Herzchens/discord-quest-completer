@@ -31,17 +31,33 @@ OrionQuest/
 ├── patcher.ts                     # RunningGameStore monkey-patch + RPC dispatch
 ├── settings.ts                    # Vencord settings schema
 ├── hooks.ts                       # settings-to-engine bridge (imports nothing, breaks the cycle)
+│
+│   # Vencord-free logic, extracted so it can be unit tested (see tests/ below)
+├── taskControl.ts                 # per-quest generations, cancellation, cleanup registry
+├── schedulerMetadata.ts           # lane assignment + the scheduler snapshot companions read
+├── heartbeatWatchdog.ts           # when to give up on a GAME/STREAM quest
+├── questConfig.ts                 # task selection, blockers, run summaries
+├── questTarget.ts                 # target value for a quest's chosen task
+├── questRewards.ts                # Orb payout and balance formatting
+├── oauthLifecycle.ts              # revoking the grants the achievement bypass created
+├── accountIdentity.ts             # "different account" vs "identity not readable yet"
+├── companionEvents.ts             # structured event bus for companion plugins
 ├── types.ts  ├── util.ts
 │
+├── tests/                         # node:test suites for the modules above.
+│                                  # `npx tsx@4 --test tests/*.test.ts`, no Vencord needed.
 ├── docs/
 │   ├── ARCHITECTURE.md            # this file
 │   └── VENCORD-PLUGIN.md          # userplugin install + usage guide
 ├── tools/
 │   ├── orion-relay/               # localhost HTTP relay (no client mod needed for the bypass)
-│   │   ├── orion-relay.ps1  ├── start-relay.cmd  └── README.md
-│   └── orion-vencord-bundle/      # non-tech installer (INSTALL.cmd + README.txt + prebuilt dist)
+│   │   ├── orion-relay.ps1  ├── orion-relay.py  ├── start-relay.cmd  └── README.md
+│   ├── orion-vencord-bundle/      # non-tech installer, copies a prebuilt Vencord over an install
+│   ├── orion-devbuild-installer/  # non-tech installer, builds Vencord from source + auto-update
+│   ├── package-release.ps1        # builds the release zips
+│   └── tests/                     # PowerShell regression tests for the installers
 └── .github/
-    └── workflows/                 # CI: lint + syntax check
+    └── workflows/                 # CI: userscript lint/syntax, unit tests, Vencord plugin build
 ```
 
 ## Module map (inside `index.js`)
