@@ -5,7 +5,7 @@
 
     const CONFIG = {
         NAME: "Orion",
-        VERSION: "v4.11.2",
+        VERSION: "v4.11.3",
         THEME: "#5865F2",             // discord blurple
         SUCCESS: "#3BA55C",
         WARN: "#faa61a",
@@ -1865,7 +1865,11 @@
                 try {
                     r = await fetch(`${this._relayUrl}/proxy`, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        // X-Orion-Relay is required by the relay so that a browser can never
+                        // reach /proxy as an unpreflighted "simple request". Without it, any
+                        // open tab could drive the relay by posting text/plain. Relay >= v4.11.3
+                        // refuses the POST if it is missing.
+                        headers: { 'Content-Type': 'application/json', 'X-Orion-Relay': '1' },
                         body: JSON.stringify({ url, headers, body: jsonBody }),
                         redirect: 'error'
                     });
@@ -1881,8 +1885,19 @@
                     if (!r.ok) {
                         const body = await r.text();
                         if (!RUNTIME.running) throw new Error('Shutdown');
-                        throw { status: r.status, body };
+                        // A relay older than v4.11.3 does not know the header and answers 403.
+                        // That is a stale helper, not a failed bypass, so say which one it is
+                        // and let the other transports try instead of failing the quest.
+                        if (r.status === 403 && body.includes('X-Orion-Relay')) {
+                            this._relayProbe = null;
+                            Logger.log('[Bypass] The running Orion Relay is out of date. Update it from tools/orion-relay/ (it now requires the X-Orion-Relay header so a web page cannot drive it). Trying other transports.', 'warn');
+                            r = null;
+                        } else {
+                            throw { status: r.status, body };
+                        }
                     }
+                }
+                if (r) {
                     const result = await r.json();
                     if (!RUNTIME.running) throw new Error('Shutdown');
                     if (!result.ok) throw { status: result.status, body: result.body };

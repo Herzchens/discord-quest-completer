@@ -39,7 +39,7 @@ function Write-Response {
     # can't read our responses, so a random open browser tab can't drive the relay.
     # Non-browser callers send no Origin and don't need CORS at all.
     if ($script:allowOrigin) { $ctx.Response.Headers['Access-Control-Allow-Origin'] = $script:allowOrigin }
-    $ctx.Response.Headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    $ctx.Response.Headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Orion-Relay'
     $ctx.Response.Headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     $ctx.Response.Headers['Cache-Control'] = 'no-store'
     $ctx.Response.ContentType = $contentType
@@ -87,6 +87,18 @@ while ($listener.IsListening) {
 
     # Proxy endpoint. POST {url, headers, body} is forwarded to discordsays.
     if ($method -eq 'POST' -and $path -eq '/proxy') {
+        # A cross-origin POST skips the CORS preflight while it stays a "simple request", which
+        # a hostile page arranges by sending the JSON as text/plain. Withholding
+        # Access-Control-Allow-Origin stops that page reading the reply, but by then the relay
+        # has already made the upstream request. Requiring a header that a simple request may
+        # not carry forces every browser caller through the preflight above, which answers only
+        # Discord origins. This is a CORS forcing function, not authentication: any local
+        # program can set the header, and local code has already won.
+        if ($req.Headers['X-Orion-Relay'] -ne '1') {
+            Write-Response $ctx 403 '{"ok":false,"status":0,"body":"missing X-Orion-Relay header"}'
+            continue
+        }
+
         $responded = $false
         try {
             # Cap the inbound body. The bypass payloads are tiny; a single-threaded ReadToEnd

@@ -11,12 +11,16 @@ on:
     paths:
       - "*.ts"
       - "tests/**/*.ts"
+      - "tools/orion-relay/**"
+      - "tools/tests/relay-regression.py"
       - ".github/workflows/tests.yml"
   pull_request:
     branches: [main]
     paths:
       - "*.ts"
       - "tests/**/*.ts"
+      - "tools/orion-relay/**"
+      - "tools/tests/relay-regression.py"
       - ".github/workflows/tests.yml"
 
 jobs:
@@ -37,3 +41,12 @@ jobs:
 
       - name: Run the test suite
         run: npx --yes tsx@4 --test tests/*.test.ts
+
+  relay:
+    name: Relay guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Relay regression
+        run: python3 tools/tests/relay-regression.py

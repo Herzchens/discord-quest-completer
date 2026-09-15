@@ -82,8 +82,11 @@ Response:
 ## Security
 
 - Listens only on `127.0.0.1`, so it is not reachable from other machines on your network.
-- Whitelists upstream hosts to `^[0-9]+\.discordsays\.com$`. Won't forward to arbitrary URLs.
-- No credentials are stored or logged.
+- Whitelists upstream hosts to `^[0-9]+\.discordsays\.com$` and the two `acf` paths the bypass uses. Won't forward to arbitrary URLs, and won't follow a redirect off that list.
+- Rejects a request whose `Host` header isn't `127.0.0.1:43210`, which is what a DNS-rebinding attack looks like.
+- Drops every header except the six the bypass needs, so a caller can't smuggle a `Cookie` upstream.
+- Requires the header `X-Orion-Relay: 1` on `/proxy`, and reflects `Access-Control-Allow-Origin` only back to `discord.com`. Together those mean a web page you happen to have open cannot drive the relay: a custom header forces the browser through a CORS preflight, and the preflight only answers Discord. **This was a real hole before v4.11.3** — withholding the CORS header stopped another site reading the reply, but a page could still send the request as `text/plain`, which skips the preflight entirely, and the relay forwarded it. Update the relay when you update the userscript; `tools/tests/relay-regression.py` is the check.
+- No credentials are stored or logged. The console line shows the upstream path and host, never the token.
 - The script source is short, so read it before you run it.
 
-That said: any process on your machine can `fetch('http://127.0.0.1:43210/proxy')` while the relay is running. The relay's host restriction limits the damage, but if you're paranoid, stop the relay between sessions.
+That said: any *program* on your machine can still POST to `http://127.0.0.1:43210/proxy` while the relay is running, since it can set the header too. The header is a CORS forcing function, not authentication. The host and path allowlist is what limits the damage, and local code that hostile has already beaten you anyway. Stop the relay between sessions if you'd rather not leave the port open.
