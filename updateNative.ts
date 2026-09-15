@@ -200,7 +200,6 @@ export async function updateOrionRelease(
     updateInFlight = true;
     let checkout: string | null = null;
     let tagRef: string | null = null;
-    let mainRef: string | null = null;
     try {
         checkout = await locateManagedCheckout();
         if (!checkout) {
@@ -247,11 +246,14 @@ export async function updateOrionRelease(
 
         const token = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
         tagRef = `refs/orion-update/tag-${token}`;
-        mainRef = `refs/orion-update/main-${token}`;
-        await run("git", ["fetch", "--force", "--no-tags", "origin", `refs/tags/${targetVersion}:${tagRef}`, `refs/heads/main:${mainRef}`], checkout);
+        await run("git", [
+            "fetch", "--atomic", "--force", "--no-tags", "origin",
+            `refs/tags/${targetVersion}:${tagRef}`,
+            "+refs/heads/main:refs/remotes/origin/main"
+        ], checkout);
 
         const targetCommit = await gitText(checkout, "rev-parse", `${tagRef}^{}`);
-        const remoteMain = await gitText(checkout, "rev-parse", mainRef);
+        const remoteMain = await gitText(checkout, "rev-parse", "refs/remotes/origin/main");
         const targetSource = (await run("git", ["show", `${targetCommit}:index.tsx`], checkout)).stdout;
         if (sourceVersion(targetSource) !== targetVersion) {
             return {
@@ -349,7 +351,6 @@ export async function updateOrionRelease(
         };
     } finally {
         if (checkout && tagRef) await deleteRef(checkout, tagRef);
-        if (checkout && mainRef) await deleteRef(checkout, mainRef);
         updateInFlight = false;
     }
 }
