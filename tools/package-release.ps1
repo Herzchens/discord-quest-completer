@@ -113,6 +113,19 @@ if (-not $SkipBundle) {
         Die "clean bundle source is missing src\userplugins\orionQuests\index.tsx"
     }
 
+    # The version checks above read the repo. The bundle is built from the clone, and those are
+    # the same files only because somebody remembered to copy them across. Packaging v4.11.3
+    # shipped a bundle carrying v4.11.2 exactly that way: the repo was bumped after the last copy,
+    # so every repo reference agreed with every other and the zip was still a version behind.
+    # Check the file the bundle is actually built from, not the one next to this script.
+    $clonePluginVersion = Select-String -LiteralPath $orionEntry -Pattern 'PLUGIN_VERSION = "(v[0-9][^"]*)"' | Select-Object -First 1
+    if (-not $clonePluginVersion) { Die "could not read PLUGIN_VERSION from the bundle source at $orionEntry" }
+    $cloneVersion = $clonePluginVersion.Matches[0].Groups[1].Value
+    if ($cloneVersion -ne $Version) {
+        Die "bundle source is stale: $orionEntry declares $cloneVersion but this release is $Version. Copy the plugin sources into the clone and rebuild before packaging."
+    }
+    Good "bundle source is on $cloneVersion, matching the release"
+
     # This is a source-provenance rule, not a prediction that every extra entry would
     # necessarily reach every output. Renderer discovery skips some names, but Vencord's
     # native discovery scans every userplugin entry for native.ts. Therefore do not exempt
