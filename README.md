@@ -1,6 +1,6 @@
 # Orion
 
-[![Version](https://img.shields.io/badge/v4.11.2-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
+[![Version](https://img.shields.io/badge/v4.11.3-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/nyxxbit/discord-quest-completer/releases/latest)
 [![Stars](https://img.shields.io/github/stars/nyxxbit/discord-quest-completer?style=for-the-badge&color=faa61a)](https://github.com/nyxxbit/discord-quest-completer/stargazers)
 [![License](https://img.shields.io/badge/MIT-green?style=for-the-badge)](LICENSE)
 
@@ -157,6 +157,11 @@ Bug reports, PRs and docs all welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has 
 ---
 
 ## Changelog
+
+### v4.11.3
+- **A web page you had open could drive the Orion Relay. Update the relay along with the userscript.** The relay reflected `Access-Control-Allow-Origin` back to `discord.com` only, which stops another site *reading* its replies, and that was mistaken for stopping other sites *using* it. It doesn't: a cross-origin `POST` skips the CORS preflight entirely as long as it stays a "simple request", which a page arranges by sending the JSON as `text/plain`. The relay never saw a preflight to refuse, forwarded the request to whichever `<id>.discordsays.com` the page named, and only the reply was withheld. `/proxy` now requires an `X-Orion-Relay: 1` header, which a simple request may not carry, so every browser caller is forced through the preflight that already refused non-Discord origins. Verified both ways in `tools/tests/relay-regression.py`, which is in CI now. This is a CORS forcing function and not authentication: a local program can set the header too, and the upstream host and path allowlist is still what limits the damage.
+- **An out-of-date relay says so instead of failing the quest.** A relay older than this answers the new header with 403, which the userscript would have reported as a failed bypass. It now names the stale relay in the log and falls through to the other transports.
+- Nothing about the relay's exposure changed otherwise: it still binds `127.0.0.1` only, still forwards only to `^[0-9]+\.discordsays\.com$` on the two `acf` paths, still drops every header outside the allowlist, still refuses a rebound `Host`, and still logs no credentials.
 
 ### v4.11.2
 - **`/orion status` and the picker now say what the account already holds, not just what the run is worth.** [#89](https://github.com/nyxxbit/discord-quest-completer/pull/89) from [@mods-hd](https://github.com/mods-hd), the read-only half of [#87](https://github.com/nyxxbit/discord-quest-completer/issues/87). `VirtualCurrencyStore` carries the figure Discord's own Orb pill shows, so that is read first and costs no request; before Discord has fetched it the store is empty and one `GET /users/@me/virtual-currency/balance` fills it in. The read happens only when you ask for status or open the picker, and nothing polls. Nothing here spends or redeems, which was the whole point of the answer on #87.

@@ -15,15 +15,15 @@
  *     already on the wire is allowed to settle, but its continuation stays dead.
  */
 
-import { Logger } from "@utils/Logger";
-
 import { companionFailure, COMPANION_EVENT_CODES, emitCompanionEvent } from "./companionEvents";
-
-const logger = new Logger("OrionQuests");
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 const rnd = (min: number, max: number): number => Math.floor(Math.random() * (max - min + 1)) + min;
 
+/**
+ * The engine's logger, injected rather than imported: this module stays free of Vencord
+ * aliases so `tests/traffic.test.ts` runs under plain `node --test` without a Vencord checkout.
+ */
 export interface TrafficLogger {
     warn(...args: any[]): void;
     error(...args: any[]): void;
@@ -144,7 +144,7 @@ export class Traffic {
     private isRunning: () => boolean;
     private log: TrafficLogger;
 
-    constructor(API: any, isRunning: () => boolean, log: TrafficLogger = logger) {
+    constructor(API: any, isRunning: () => boolean, log: TrafficLogger) {
         this.API = API;
         this.isRunning = isRunning;
         this.log = log;

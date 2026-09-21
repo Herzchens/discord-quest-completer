@@ -39,6 +39,9 @@ HEADER_ALLOW = {
 }
 MAX_BODY = 65536
 
+# Sent by the userscript on /proxy. See the comment in do_POST.
+REQUIRED_HEADER = 'X-Orion-Relay'
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
@@ -53,7 +56,7 @@ class Handler(BaseHTTPRequestHandler):
         # then can't read our responses, so a random open tab can't drive the relay.
         if origin:
             self.send_header('Access-Control-Allow-Origin', origin)
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Orion-Relay')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Cache-Control', 'no-store')
         self.send_header('Content-Type', content_type)
@@ -90,6 +93,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, '{"ok":false,"status":0,"body":"bad host"}', origin)
         if self.path != '/proxy':
             return self._send(404, '{"ok":false,"status":404,"body":"unknown endpoint"}', origin)
+
+        # A cross-origin POST skips the CORS preflight while it stays a "simple request", which
+        # a hostile page arranges by sending the JSON as text/plain. Withholding
+        # Access-Control-Allow-Origin stops that page reading the reply, but by then the relay
+        # has already made the upstream request. Requiring a header that a simple request may
+        # not carry forces every browser caller through the preflight above, which answers only
+        # Discord origins. This is a CORS forcing function, not authentication: any local
+        # program can set the header, and local code has already won.
+        if self.headers.get(REQUIRED_HEADER) != '1':
+            return self._send(403, '{"ok":false,"status":0,"body":"missing X-Orion-Relay header"}', origin)
 
         try:
             length = int(self.headers.get('Content-Length') or 0)
