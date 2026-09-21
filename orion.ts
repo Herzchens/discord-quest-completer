@@ -102,6 +102,7 @@ let tasks: TaskRunner | null = null;
 let questStore: any = null;
 let userStore: any = null;
 let virtualCurrencyStore: any = null;
+let premiumFeatures: any = null;
 let sessionOwnerUserId: string | null = null;
 /**
  * Why the last run ended, when it ended on its own rather than by the user stopping it.
@@ -209,6 +210,23 @@ export function getUserStore(): any {
 export function getVirtualCurrencyStore(): any {
     if (!virtualCurrencyStore) virtualCurrencyStore = findStore("VirtualCurrencyStore");
     return virtualCurrencyStore;
+}
+
+/**
+ * Whether Discord pays this account the premium Orb figure. Discord's own quest card decides
+ * with canUseMoreQuestOrbs on its premium feature module, which covers Nitro and Xbox Game Pass
+ * alike, so the same function is called here with the signed-in user. When the module cannot
+ * be found, or the call throws, the answer is false and the base figure is shown; under-promising
+ * is the safe side for a number used to pick what to farm.
+ */
+export function canUseMoreQuestOrbs(): boolean {
+    try {
+        if (!premiumFeatures) premiumFeatures = findByProps("canUseMoreQuestOrbs", "canUseShopDiscounts");
+        const user = getUserStore()?.getCurrentUser?.();
+        return user != null && premiumFeatures?.canUseMoreQuestOrbs?.(user) === true;
+    } catch {
+        return false;
+    }
 }
 
 /**
