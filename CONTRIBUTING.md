@@ -36,10 +36,10 @@ The plugin's pure logic is covered by `tests/`: the scheduler's task control and
 generations, the heartbeat watchdog, quest selection and blockers, Orb rewards, the request
 queue's retry and cancellation behaviour, companion events, and OAuth grant cleanup. Those
 modules import nothing from Vencord precisely so the suite runs anywhere with one command.
-**Keep it that way** — pulling `@utils/…`, `@api/…` or `@webpack` into a tested module breaks
+**Keep it that way.** Pulling `@utils/…`, `@api/…` or `@webpack` into a tested module breaks
 the fast CI job. Inject the dependency instead, the way `Traffic` takes its logger.
 
-Everything else — store discovery, the patcher, the dashboard, and every network path — is
+Everything else, meaning store discovery, the patcher, the dashboard and every network path, is
 only verifiable against a live client:
 
 1. Open Discord desktop (Stable, PTB, or Canary).
