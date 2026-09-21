@@ -12,6 +12,13 @@
         ERR: "#f04747",
         HIDE_ACTIVITY: false,           // hide "Playing ..." while quests run (turns Discord's own
                                         // showCurrentGame off for the duration, restores it after)
+        PLAY_SESSION_TAIL_MIN: 2,       // minutes to keep a finished game quest's fake process
+                                        // running, picked at random between 40% and 100% of this
+                                        // each time. 0 drops it on the tick that crossed the
+                                        // target, which makes every session exactly as long as
+                                        // the quest requirement. Costs no extra requests: Discord
+                                        // ends the quest heartbeat itself on completion, so this
+                                        // only extends the "Playing ..." presence.
         MAX_LOG_ITEMS: 60               // UI log limit
     };
 
@@ -1527,21 +1534,56 @@
             return null;
         },
 
+        // Which win32 executable to claim, and where to say it lives.
+        //
+        // Discord's executables[] entries are not always a bare file name, and the array does not
+        // come back in a stable order. Live on 2026-09-21: Dragonheir's entries include
+        // "dragonheir silent gods/dragonheir.exe", and Marvel Rivals came back as
+        // [test, shipping, marvel, launcher] and then as [test, launcher, marvel, shipping]
+        // minutes apart. Taking the first win32 entry and pasting it after "C:\Program Files\
+        // <Game>\" doubled the game folder, left a slash inside the reported executable name,
+        // which no real process report contains, and named a different binary run to run.
+        // relPath is relative to Program Files and always uses forward slashes.
+        pickExecutable(executables, cleanName) {
+            const loose = v => v.replace(/[^a-z0-9]/gi, "").toLowerCase();
+            const fallbackExe = `${cleanName.replace(/\s+/g, "")}.exe`;
+
+            const win32 = (Array.isArray(executables) ? executables : [])
+                .filter(x => x?.os === "win32" && typeof x.name === "string" && x.name.length > 0)
+                .map(x => x.name.replace(">", "").replace(/\\/g, "/"));
+            if (win32.length === 0) return { exeName: fallbackExe, relPath: `${cleanName}/${fallbackExe}` };
+
+            const rank = n => [
+                /(^|[-_./ ])test([-_. ]|\.exe$)/i.test(n) ? "1" : "0",   // an internal build
+                /launcher/i.test(n) ? "1" : "0",                          // the launcher, not the game
+                n.includes("/") ? "1" : "0",                              // needs a directory guessed
+                n
+            ].join("");
+            const chosen = win32.slice().sort((a, b) => (rank(a) < rank(b) ? -1 : rank(a) > rank(b) ? 1 : 0))[0];
+            const parts = chosen.split("/").filter(Boolean);
+            const exeName = parts[parts.length - 1];
+            const dirs = parts.slice(0, -1);
+
+            // Discord sometimes spells the game folder into the entry itself; prepending our own
+            // copy on top is what produced ".../dragonheir silent gods/dragonheir silent gods/".
+            const alreadyRooted = dirs.length > 0 && loose(dirs[0]) === loose(cleanName);
+            return { exeName, relPath: (alreadyRooted ? parts : [cleanName, ...parts]).join("/") };
+        },
+
         // pull real exe metadata from Discord's app registry; falls back to synthetic paths
         async fetchGameData(appId, appName) {
             try {
                 const res = await Mods.API.get({ url: `/applications/public?application_ids=${appId}` });
                 const appData = res?.body?.[0];
-                const exeEntry = appData?.executables?.find(x => x.os === "win32");
-                const rawExe = exeEntry ? exeEntry.name.replace(">", "") : `${this.sanitize(appName)}.exe`;
                 const cleanName = this.sanitize(appData?.name || appName);
+                const { exeName, relPath } = this.pickExecutable(appData?.executables, cleanName);
 
                 return {
                     name: appData?.name || appName,
                     icon: appData?.icon,
-                    exeName: rawExe,
-                    cmdLine: `C:\\Program Files\\${cleanName}\\${rawExe}`,
-                    exePath: `c:/program files/${cleanName.toLowerCase()}/${rawExe}`,
+                    exeName,
+                    cmdLine: `C:\\Program Files\\${relPath.replace(/\//g, "\\")}`,
+                    exePath: `c:/program files/${relPath.toLowerCase()}`,
                     id: appId
                 };
             } catch (e) {
@@ -1676,6 +1718,7 @@
 
                 let cleanupHook;
                 let cleaned = false;
+                let spoofReleased = false;
                 let safetyTimer;
                 let watchdogTimer;
                 let beats = 0;
@@ -1712,19 +1755,47 @@
                 Logger.updateTask(q.id, { name: t.name, type, cur: seeded, max: t.target, status: "RUNNING" });
                 Logger.log(`[Task] Started ${type}: ${gameData.name}`, 'info');
 
-                const finish = () => {
+                // Stopping the watching and releasing the fake process used to be one step. They
+                // are separate because a finished quest holds the process a little longer than it
+                // needs it, and the watchdog must not be alive for that window: Discord ends its
+                // own heartbeat the moment it sees completedAt, so every beat the watchdog would
+                // wait for after completion is one that is never going to arrive.
+                const stopWatching = () => {
                     if (cleaned) return;
                     cleaned = true;
                     clearTimeout(safetyTimer);
                     clearTimeout(watchdogTimer);
-                    try { cleanupHook(); } catch (e) { Logger.log(`[Task] Cleanup: ${e.message}`, 'debug'); }
                     try { Mods.Dispatcher?.unsubscribe(CONST.EVT.HEARTBEAT, check); } catch (e) {
                         Logger.log(`[Dispatcher] Unsubscribe failed: ${e.message}`, 'debug');
                     }
                     try { Mods.Dispatcher?.unsubscribe(CONST.EVT.HEARTBEAT_FAIL, onFail); } catch (e) {
                         Logger.log(`[Dispatcher] Unsubscribe failed: ${e.message}`, 'debug');
                     }
+                };
+
+                const releaseSpoof = () => {
+                    if (spoofReleased) return;
+                    spoofReleased = true;
+                    try { cleanupHook(); } catch (e) { Logger.log(`[Task] Cleanup: ${e.message}`, 'debug'); }
                     RUNTIME.cleanups.delete(abort);
+                };
+
+                const finish = () => { stopWatching(); releaseSpoof(); };
+
+                // A real play session does not end on the second the quest target is reached, and
+                // its overshoot is different every time. Dropping the process on the exact beat
+                // that crossed the target made every session precisely as long as the quest
+                // requirement, on every quest. Interruptible: Stop drops it at once.
+                const linger = async () => {
+                    const maxMinutes = Number(CONFIG.PLAY_SESSION_TAIL_MIN ?? 0);
+                    if (!Number.isFinite(maxMinutes) || maxMinutes <= 0) return;
+                    const maxMs = Math.round(maxMinutes * 60 * 1000);
+                    const tailMs = rnd(Math.round(maxMs * 0.4), maxMs);
+                    Logger.log(`[Task] Holding ${type} "${gameData.name}" for ${Math.round(tailMs / 1000)}s after completion.`, 'debug');
+                    const step = 500;
+                    for (let waited = 0; waited < tailMs && RUNTIME.running && !spoofReleased; waited += step) {
+                        await sleep(Math.min(step, tailMs - waited));
+                    }
                 };
 
                 // What shutdown runs. finish() alone clears the timers that would otherwise have
@@ -1784,9 +1855,10 @@
                     });
 
                     if (prog >= t.target) {
-                        finish();
-                        Tasks.finish(q, t);
-                        resolve();
+                        stopWatching();
+                        Promise.resolve(Tasks.finish(q, t))
+                            .then(linger)
+                            .finally(() => { releaseSpoof(); resolve(); });
                     }
                 };
 

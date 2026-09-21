@@ -216,3 +216,48 @@ export function summarizeRun(outcomes: Map<string, QuestOutcome>): RunSummary {
     if (failed) parts.push(`${failed} failed`);
     return { finished, blocked, failed, line: `Nothing left to run. ${parts.join(", ")}.`, playDone: finished > 0 };
 }
+
+/**
+ * Choose which win32 executable to claim for a spoofed game, and where to say it lives.
+ *
+ * Discord's `executables[]` entries are not always a bare file name, which is what the old
+ * code assumed. Live data on 2026-09-21: Dragonheir's first win32 entry is
+ * "dragonheir silent gods/dragonheir.exe" and Marvel Rivals' is "win64/marvel-win64-test.exe".
+ * Taking entry zero and pasting it after "C:\Program Files\<Game>\" doubled the game folder,
+ * mixed the separators, and left a slash inside the string reported as the executable name,
+ * which no real process report contains. It also claimed an internal test build for a game
+ * that ships a different binary.
+ *
+ * `relPath` is relative to Program Files and always uses forward slashes; the caller decides
+ * the separator and the case.
+ */
+export function pickExecutable(executables: unknown, cleanName: string): { exeName: string; relPath: string; } {
+    const loose = (v: string): string => v.replace(/[^a-z0-9]/gi, "").toLowerCase();
+    const fallbackExe = `${cleanName.replace(/\s+/g, "")}.exe`;
+
+    const win32 = (Array.isArray(executables) ? executables : [])
+        .filter((x: any) => x?.os === "win32" && typeof x.name === "string" && x.name.length > 0)
+        .map((x: any) => x.name.replace(">", "").replace(/\\/g, "/"));
+    if (win32.length === 0) return { exeName: fallbackExe, relPath: `${cleanName}/${fallbackExe}` };
+
+    // Discord does not return this array in a stable order. Marvel Rivals came back as
+    // [test, shipping, marvel, launcher] and then as [test, launcher, marvel, shipping] minutes
+    // apart on 2026-09-21, so "take the first win32 entry" reported a different executable for
+    // the same game from one run to the next. Rank them instead, and break ties by name, so the
+    // same app always produces the same answer.
+    const rank = (n: string): string => [
+        /(^|[-_./ ])test([-_. ]|\.exe$)/i.test(n) ? "1" : "0",   // an internal build
+        /launcher/i.test(n) ? "1" : "0",                          // the launcher, not the game
+        n.includes("/") ? "1" : "0",                              // needs a directory guessed
+        n,
+    ].join("");
+    const chosen = win32.slice().sort((a, b) => (rank(a) < rank(b) ? -1 : rank(a) > rank(b) ? 1 : 0))[0];
+    const parts = chosen.split("/").filter(Boolean);
+    const exeName = parts[parts.length - 1];
+    const dirs = parts.slice(0, -1);
+
+    // Discord sometimes spells the game folder into the entry itself. Prepending our own copy
+    // on top of that is what produced ".../dragonheir silent gods/dragonheir silent gods/...".
+    const alreadyRooted = dirs.length > 0 && loose(dirs[0]) === loose(cleanName);
+    return { exeName, relPath: (alreadyRooted ? parts : [cleanName, ...parts]).join("/") };
+}

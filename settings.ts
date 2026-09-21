@@ -57,6 +57,15 @@ export const settings = definePluginSettings({
         default: false,
     },
 
+    playSessionTail: {
+        type: OptionType.SLIDER,
+        description:
+            "Minutes to keep a game quest's spoofed process running after the quest completes, picked at random between 40% and 100% of this value each time. Without it the fake session ends on the exact heartbeat that crossed the quest's requirement, so its length is always precisely the requirement, on every quest. Real play overshoots by a different amount every time, and r/DiscordQuests' suspension megathread reports that finishing at exactly the quest duration is among the patterns being flagged, though nobody outside Discord has measured what its detector actually weighs. Costs no extra requests: Discord ends the quest heartbeat itself the moment it sees the completion, so this only extends the 'Playing ...' presence. Set to 0 to drop the process immediately. Stop releases it at once either way.",
+        markers: [0, 1, 2, 3, 5, 8],
+        stickToMarkers: true,
+        default: 2,
+    },
+
     gameConcurrency: {
         type: OptionType.SLIDER,
         description:

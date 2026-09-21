@@ -19,7 +19,7 @@ import {
 import { HeartbeatWatchdog } from "./heartbeatWatchdog";
 import { cleanupCreatedOAuthGrants } from "./oauthLifecycle";
 import type { Patcher } from "./patcher";
-import { isConsoleOnly, recordOutcome, selectTaskFamily, taskEntries, taskForKey } from "./questConfig";
+import { isConsoleOnly, pickExecutable, recordOutcome, selectTaskFamily, taskEntries, taskForKey } from "./questConfig";
 import { settings } from "./settings";
 import type { TaskLifecycle } from "./taskControl";
 import type { Traffic } from "./traffic";
@@ -186,6 +186,29 @@ export class TaskRunner {
         return this.isTaskActive(t);
     }
 
+    /**
+     * Hold a finished quest's spoofed process for a randomised tail before dropping it.
+     *
+     * A real play session does not end on the second the quest target is reached: the player
+     * keeps the game open, or leaves it running and walks away, and the overshoot is different
+     * every time. Orion used to remove the process on the exact heartbeat that crossed the
+     * target, which makes the session length a constant equal to the quest requirement, on
+     * every quest, forever. That is a gap in the emulation rather than a feature anyone chose.
+     *
+     * The tail costs no quest traffic. Discord terminates its own heartbeat as soon as it sees
+     * completedAt and sends the terminal beat itself, so what the tail extends is the presence
+     * the account shows, and nothing else. It is cancellable: Stop drops the process at once.
+     */
+    private async linger(t: ControlledTaskInfo, type: TaskType, gameName: string): Promise<void> {
+        const maxMinutes = Number(settings.store.playSessionTail ?? 0);
+        if (!Number.isFinite(maxMinutes) || maxMinutes <= 0) return;
+
+        const maxMs = Math.round(maxMinutes * 60 * 1000);
+        const tailMs = rnd(Math.round(maxMs * 0.4), maxMs);
+        debug(logger, `[Task] Holding ${type} "${gameName}" for ${Math.round(tailMs / 1000)}s after completion.`);
+        await this.wait(t, tailMs);
+    }
+
     private syncStreamSpoof(): void {
         if (!this.stores.StreamStore) return;
 
@@ -260,15 +283,14 @@ export class TaskRunner {
         try {
             const res = await this.stores.API.get({ url: `/applications/public?application_ids=${appId}` });
             const appData = res?.body?.[0];
-            const exeEntry = appData?.executables?.find((x: any) => x.os === "win32");
-            const rawExe = exeEntry ? exeEntry.name.replace(">", "") : `${sanitize(appName)}.exe`;
             const cleanName = sanitize(appData?.name || appName);
+            const { exeName, relPath } = pickExecutable(appData?.executables, cleanName);
             return {
                 name: appData?.name || appName,
                 icon: appData?.icon,
-                exeName: rawExe,
-                cmdLine: `C:\\Program Files\\${cleanName}\\${rawExe}`,
-                exePath: `c:/program files/${cleanName.toLowerCase()}/${rawExe}`,
+                exeName,
+                cmdLine: `C:\\Program Files\\${relPath.replace(/\//g, "\\")}`,
+                exePath: `c:/program files/${relPath.toLowerCase()}`,
                 id: appId,
             };
         } catch (e: any) {
@@ -407,6 +429,7 @@ export class TaskRunner {
 
             let cleanupHook: () => void = () => { };
             let cleaned = false;
+            let spoofReleased = false;
             let safetyTimer: number | undefined;
             let subscribed = false;
             // Created below, after the spoof is installed, but cleanup can run before that.
@@ -414,20 +437,32 @@ export class TaskRunner {
             let heartbeatConsecutiveFailures = 0;
             let lastHeartbeatFailure: HeartbeatErrorDetails | null = null;
 
-            const finish = () => {
+            // Stopping the watching and releasing the spoof used to be one step. They are
+            // separate because a completed quest holds the fake process a little longer than it
+            // needs it, and the watchdog must not be alive for that window: Discord terminates
+            // its own heartbeat the moment it sees completedAt, so every beat the watchdog
+            // would wait for after completion is one that is never going to arrive.
+            const stopWatching = () => {
                 if (cleaned) return;
                 cleaned = true;
                 clearTimeout(safetyTimer);
                 watchdog?.stop();
-                try { cleanupHook(); } catch (e: any) { debug(logger, `[Task] Cleanup: ${e?.message}`); }
                 if (subscribed) {
                     try { this.stores.Dispatcher?.unsubscribe(HEARTBEAT_EVT, check); }
                     catch (e: any) { debug(logger, `[System] Dispatcher unsubscribe failed: ${e?.message}`); }
                     try { this.stores.Dispatcher?.unsubscribe(HEARTBEAT_FAIL_EVT, onFail); }
                     catch (e: any) { debug(logger, `[System] Dispatcher unsubscribe failed: ${e?.message}`); }
                 }
+            };
+
+            const releaseSpoof = () => {
+                if (spoofReleased) return;
+                spoofReleased = true;
+                try { cleanupHook(); } catch (e: any) { debug(logger, `[Task] Cleanup: ${e?.message}`); }
                 this.removeCleanup(t, abort);
             };
+
+            const finish = () => { stopWatching(); releaseSpoof(); };
 
             const abort = () => { finish(); resolve(); };
 
@@ -520,9 +555,11 @@ export class TaskRunner {
                 const prog = this.readProgress(d.userStatus, key);
                 this.cb.onProgress(q.id, { name: t.name, type, cur: prog, max: t.target, status: "RUNNING" });
                 if (prog >= t.target) {
-                    finish();
-                    if (!this.isTaskActive(t)) { resolve(); return; }
-                    this.cb.onComplete(q, t).finally(() => resolve());
+                    stopWatching();
+                    if (!this.isTaskActive(t)) { releaseSpoof(); resolve(); return; }
+                    this.cb.onComplete(q, t)
+                        .then(() => this.linger(t, type, gameData.name))
+                        .finally(() => { releaseSpoof(); resolve(); });
                 }
             };
 
