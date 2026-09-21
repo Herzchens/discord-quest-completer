@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes how Orion is structured internally. It is intended for contributors and the curious, not as a user guide. Last reviewed against `index.js` **v4.11.3**.
+This document describes how Orion is structured internally. It is intended for contributors and the curious, not as a user guide. Last reviewed against `index.js` **v4.11.4**.
 
 ## High-level overview
 
@@ -225,7 +225,9 @@ All already in code, not proposals:
 - **JIT enrollment** (v4.4): quests enrolled one at a time right before execution. Both engines can turn it off (`autoEnroll`), which leaves quests you have not accepted untouched and pending until you accept them in Discord yourself.
 - **Randomized intervals**: every polling/heartbeat loop uses `rnd(min,max)` ranges.
 - **Realistic PIDs** for injected games (multiples of 4).
-- **Natural video timestamps**: 6-decimal float seconds; cadence `rnd(3500,4750)`ms (2x faster than Discord's native 7-9.5s player loop).
+- **Natural video timestamps**: 6-decimal float seconds, cadence `rnd(7000,9500)`ms, which is Discord's own player loop rather than a faster one.
+- **The executable a spoofed game claims** comes from Discord's own app registry, and `pickExecutable` decides which of the listed entries to use. It demotes internal test builds and launchers, demotes entries that would need an install directory guessed, and breaks ties by name. The tie-break is not cosmetic: Discord does not return `executables[]` in a stable order, so taking entry zero reported a different binary for the same game run to run. It also refuses to prepend the game folder when Discord already spelled it into the entry, which used to produce `c:/program files/dragonheir silent gods/dragonheir silent gods/dragonheir.exe`, and it always reports a bare file name, because a real process report cannot contain a path separator.
+- **The play session outlives the quest** by `PLAY_SESSION_TAIL_MIN` / `playSessionTail` minutes, randomised between 40% and 100% of it, default 2, `0` to disable. Without it the injected process disappeared on the exact heartbeat that crossed the target, making the session length a constant equal to the quest requirement on every quest. It costs no extra requests: Discord terminates its own quest heartbeat as soon as it sees `completedAt` and sends the terminal beat itself, so the tail extends presence and nothing else. `finish()` is split into `stopWatching()` and `releaseSpoof()` for it, because leaving the watchdog up through the tail would fail a quest that had already succeeded.
 - **Concurrency**: games at 1, videos at 2 (both exposed as Vencord settings).
 - **Optional `randomDelay`** (off by default): a `rnd(60_000,1_800_000)`ms idle gap between cycles. The Vencord port currently uses a fixed `rnd(2500,4500)`ms inter-cycle wait instead.
 
