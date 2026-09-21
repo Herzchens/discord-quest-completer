@@ -9,3 +9,6 @@ tools/orion-vencord-bundle-v*.zip
 tools/orion-relay-v*.zip
 tools/orion-devbuild-installer/plugin/
 tools/orion-devbuild-installer-v*.zip
+
+# playwright-mcp drops snapshots and console logs wherever it is run from
+.playwright-mcp/
